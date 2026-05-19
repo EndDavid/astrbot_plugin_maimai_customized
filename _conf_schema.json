@@ -1,0 +1,81 @@
+{
+  "bot_name": {
+    "description": "机器人名称",
+    "hint": "用于在消息中显示（如：今日运势功能）",
+    "type": "string",
+    "default": "Bot"
+  },
+  "enable_reply": {
+    "description": "引用回复",
+    "hint": "是否在多数指令回复中添加“引用消息”（Reply）。关闭可减少引用/提及效果。",
+    "type": "bool",
+    "default": true
+  },
+  "maimaidxtoken": {
+    "description": "水鱼 Developer-Token",
+    "hint": "开发者 Token，用于 /dev/player/records、/dev/player/record、/query_plate 等查分与牌子接口；不是 Import-Token。Import-Token 请用户使用 /绑定水鱼 命令自行绑定。",
+    "type": "string",
+    "default": ""
+  },
+  "roast_b50_provider_id": {
+    "description": "锐评B50专用模型",
+    "hint": "可选。填写 AstrBot 中的模型 Provider ID 后，锐评b50 会优先使用该模型；留空则使用当前会话默认模型。",
+    "type": "string",
+    "default": ""
+  },
+  "roast_persona_prompt_sample_limit": {
+    "description": "锐评人格注入样本上限",
+    "hint": "人格库可无限存储，但每次锐评只注入有限样本，避免 LLM 上下文过长。默认 120。",
+    "type": "int",
+    "default": 120
+  },
+  "roast_persona_webui_enabled": {
+    "description": "插件管理 WebUI",
+    "hint": "是否开启插件管理 WebUI。开启后可在浏览器中管理锐评人格，并查看插件总览、命令说明和配置摘要。",
+    "type": "bool",
+    "default": false
+  },
+  "roast_persona_webui_host": {
+    "description": "插件管理 WebUI 监听地址",
+    "hint": "建议仅本机访问时使用 127.0.0.1；如需外部访问可设置为 0.0.0.0，并务必配置访问 Token。",
+    "type": "string",
+    "default": "127.0.0.1"
+  },
+  "roast_persona_webui_port": {
+    "description": "插件管理 WebUI 端口",
+    "hint": "插件管理 WebUI 的 HTTP 监听端口。",
+    "type": "int",
+    "default": 8796
+  },
+  "roast_persona_webui_token": {
+    "description": "插件管理 WebUI 访问 Token",
+    "hint": "访问 WebUI 时使用 ?token=这里的值。为空则不校验，不建议在公网环境留空。",
+    "type": "string",
+    "default": ""
+  },
+  "sgid_max_age_seconds": {
+    "description": "SGID 有效窗口",
+    "hint": "更新b50 使用的官方二维码 SGID 最大有效秒数。超过该时间会拒绝使用，建议保持 180。",
+    "type": "int",
+    "default": 180
+  },
+  "request_timeout_seconds": {
+    "description": "更新b50 请求超时",
+    "hint": "拉取机台成绩并同步水鱼时的网络请求超时时间，单位秒。",
+    "type": "int",
+    "default": 30
+  },
+  "maimai_http_proxy": {
+    "description": "更新b50 HTTP 代理",
+    "hint": "可选。访问官方机台数据源时使用的 HTTP 代理地址，留空则不使用。",
+    "type": "string",
+    "default": ""
+  },
+  "warn_unsupported_recall": {
+    "description": "敏感消息撤回提示",
+    "hint": "更新b50 时会尝试撤回包含 SGID 的用户消息。开启后如果撤回失败会提示用户手动撤回。",
+    "type": "bool",
+    "default": true
+  }
+}
+

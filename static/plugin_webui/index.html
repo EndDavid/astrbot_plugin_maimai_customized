@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>舞萌 DX 插件管理</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="bootLoader" class="boot-loader"><div class="loader-card"><div class="loader-orb"></div><div class="loader-title">正在载入舞萌 DX 管理面板</div><div class="loader-bar"><span></span></div></div></div>
+<div class="bg-bubble b1"></div><div class="bg-bubble b2"></div><div class="bg-bubble b3"></div><div class="bg-bubble b4"></div><div class="bg-bubble b5"></div><div class="bg-bubble b6"></div>
+<div class="app-shell">
+  <aside class="sidebar glass">
+    <div class="brand"><div class="mascot">♡</div><div><h1>舞萌 DX</h1><p>插件管理面板</p></div></div>
+    <nav class="nav-tabs">
+      <button class="nav active" data-tab="overview">总览</button>
+      <button class="nav" data-tab="persona">锐评人格</button>
+      <button class="nav" data-tab="tags">谱面标签</button>
+      <button class="nav" data-tab="config">配置管理</button>
+      <button class="nav" data-tab="commands">命令说明</button>
+    </nav>
+    <div class="side-tip">WebUI 会实时从插件接口读取人格、配置摘要和绑定统计。修改配置后仍建议重启插件。</div>
+  </aside>
+  <main class="main">
+    <section class="hero glass"><div><h2>插件控制台</h2><p>管理锐评人格、查看插件能力、确认更新 B50 绑定状态与常用命令。</p></div><button id="refreshAllBtn" class="secondary">刷新全部</button></section>
+    <section id="overview" class="tab-panel active">
+      <div id="overviewCards" class="cards skeleton-grid"></div>
+      <div class="grid two">
+        <article class="card"><h3>更新 B50 绑定机制</h3><p class="muted">首次执行 <b>更新b50 &lt;SGWCMAID识别码&gt;</b> 成功后，会保存该用户的机台用户信息。之后可直接发送 <b>更新b50</b> 尝试复用旧绑定拉取成绩；如果失效，再重新发送新的 SGWCMAID。</p></article>
+        <article class="card"><h3>锐评 B50</h3><p class="muted">锐评会结合 Rating 分段、B35/B15、含金量、曲师/谱师与人格样本生成图片。专用模型只能在 AstrBot 插件配置页设置。</p></article>
+      </div>
+    </section>
+    <section id="persona" class="tab-panel">
+      <div class="grid persona-grid">
+        <div class="stack">
+          <main class="card form-card">
+            <div class="card-header">
+              <h3>编辑人格</h3>
+              <button id="loadPersonaBtn" class="secondary small-btn" title="从人格库加载现有配置">加载现有人格</button>
+            </div>
+            <div class="tip">人格名称和聊天样本必填。系统会自动追加新样本、跳过重复或无效样本，并通过 LLM 智能筛选最优样本。</div>
+            <label>人格名称 <span>必填</span></label><input id="personaName">
+            <label>品味说明 <span>选填</span></label><textarea id="tasteRoast" class="taste"></textarea>
+            <label>特殊说明 <span>选填，只影响正文</span></label><textarea id="specialNote" class="taste"></textarea>
+            <label>聊天样本 <span>必填</span></label><textarea id="samples"></textarea>
+            <div class="row"><button id="saveBtn">保存 / 自动追加</button><button id="clearBtn" class="ghost">清空输入</button><button id="deleteCurrentBtn" class="danger">删除当前人格</button></div>
+            <div id="result" class="result"></div>
+          </main>
+          <section class="card">
+            <h3>导入 JSON 聊天记录</h3>
+            <div class="tip">只提取目标 QQ 的纯文本消息，并过滤 at、图片、引用/回复、表情、语音等内容。导入后系统会自动筛选最优样本。</div>
+            <label>导入到人格名称 <span>必填</span></label><input id="importPersonaName">
+            <label>目标 QQ <span>必填</span></label><input id="importQQ">
+            <label>JSON 文件</label>
+            <div class="file-upload-wrapper">
+              <input id="jsonFile" type="file" accept=".json,application/json" class="file-input">
+              <label for="jsonFile" class="file-upload-btn">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span id="fileText">选择文件</span>
+              </label>
+            </div>
+            <div class="row"><button id="importBtn" class="secondary">导入 JSON</button></div>
+            <div id="importResult" class="result"></div>
+          </section>
+        </div>
+        <aside class="card side-list"><div class="card-head"><h3>人格库</h3><button id="refreshBtn" class="secondary small-btn">刷新</button></div><div id="list" class="persona-list"></div></aside>
+      </div>
+    </section>
+    <section id="tags" class="tab-panel">
+      <div class="card">
+        <h3>谱面标签</h3>
+        <div id="tagsBox" class="tag-grid"></div>
+      </div>
+    </section>
+    <section id="config" class="tab-panel">
+      <div class="card">
+        <h3>配置管理</h3>
+        <div id="configForm" class="config-form"></div>
+      </div>
+    </section>
+    <section id="commands" class="tab-panel"><div id="commandsBox" class="command-grid"></div></section>
+  </main>
+</div>
+<div id="personaModal" class="modal">
+  <div class="modal-content glass">
+    <div class="modal-header">
+      <h3>选择人格</h3>
+      <button class="modal-close" onclick="closePersonaModal()">&times;</button>
+    </div>
+    <div id="personaModalList" class="modal-list"></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/assets/app.js"></script>
+</body>
+</html>
