@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from typing import Any
 
+import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent
 
-from .. import log
+from .. import log, score_recommend_history_json
 from ..command.mai_base import convert_message_segment_to_chain, extract_at_qqid
-from ..libraries.chart_tags.lookup import get_chart_tags
+from ..libraries.chart_tags.lookup import chart_key, get_chart_tags
+from ..libraries.chart_tags.rule_tags import filter_allowed_tags
+from ..libraries.chart_tags.storage import read_chart_tags
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from ..libraries.maimaidx_music import mai
@@ -21,7 +25,9 @@ RECOMMEND_RATING_HIGH_DIVISOR = 1075
 RECOMMEND_MAX_DS = 15.0
 RECOMMEND_LEVEL_INDEXES = (2, 3, 4)
 RECOMMEND_CONCURRENCY_LIMIT = 2
+RECOMMEND_HISTORY_SIZE = 3
 _RECOMMEND_SEMAPHORE = asyncio.Semaphore(RECOMMEND_CONCURRENCY_LIMIT)
+_HISTORY_LOCK = asyncio.Lock()
 
 
 def _sssp_rating(ds: float) -> int:
@@ -78,7 +84,7 @@ def _is_sssp_in_b50(chart: Any) -> bool:
     return rate in {"sssp", "sss+"} or achievements >= 100.5
 
 
-def _sort_key(candidate: dict[str, Any]) -> tuple[bool, float, int, str]:
+def _sort_key(candidate: dict[str, Any]) -> tuple[float, bool, float, int, str]:
     fit_delta = candidate.get("fit_delta")
     return (
         float(candidate["ds"]),
@@ -87,6 +93,103 @@ def _sort_key(candidate: dict[str, Any]) -> tuple[bool, float, int, str]:
         -int(candidate["sssp_ra"]),
         str(candidate["title"]),
     )
+
+
+def _candidate_key(candidate: dict[str, Any]) -> str:
+    return f'{candidate["song_id"]}:{candidate["level_index"]}'
+
+
+def _reply_chain(event: AstrMessageEvent, items: list[Any]) -> list[Any]:
+    chain = list(items)
+    if getattr(event, "message_obj", None):
+        message_id = getattr(event.message_obj, "message_id", None)
+        if message_id:
+            chain.insert(0, Comp.Reply(id=message_id))
+    return chain
+
+
+def _reply_text_result(event: AstrMessageEvent, text: str) -> Any:
+    return event.chain_result(_reply_chain(event, [Comp.Plain(text)]))
+
+
+def _read_history() -> dict[str, list[str]]:
+    try:
+        if not score_recommend_history_json.exists():
+            return {}
+        data = json.loads(score_recommend_history_json.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        history: dict[str, list[str]] = {}
+        for qq, items in data.items():
+            if not isinstance(items, list):
+                continue
+            cleaned = [str(item) for item in items if isinstance(item, (str, int))]
+            history[str(qq)] = cleaned[:RECOMMEND_HISTORY_SIZE]
+        return history
+    except Exception as exc:
+        log.warning(f"吃分推荐历史读取失败，已忽略历史记录: {exc}")
+        return {}
+
+
+def _write_history(history: dict[str, list[str]]) -> None:
+    score_recommend_history_json.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = score_recommend_history_json.with_suffix(score_recommend_history_json.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(score_recommend_history_json)
+
+
+def _select_candidate(candidates: list[dict[str, Any]], recent_keys: list[str]) -> dict[str, Any]:
+    if len(candidates) <= RECOMMEND_HISTORY_SIZE:
+        return candidates[0]
+
+    recent = set(recent_keys[:RECOMMEND_HISTORY_SIZE])
+    for candidate in candidates:
+        if _candidate_key(candidate) not in recent:
+            return candidate
+    return candidates[0]
+
+
+def _update_history(history: dict[str, list[str]], qq: str, candidate: dict[str, Any]) -> None:
+    key = _candidate_key(candidate)
+    stack = [item for item in history.get(qq, []) if item != key]
+    history[qq] = [key, *stack][:RECOMMEND_HISTORY_SIZE]
+
+
+async def _choose_candidate_for_user(qq: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    async with _HISTORY_LOCK:
+        history = await asyncio.to_thread(_read_history)
+        candidate = _select_candidate(candidates, history.get(str(qq), []))
+        _update_history(history, str(qq), candidate)
+        await asyncio.to_thread(_write_history, history)
+        return candidate
+
+
+def _tags_from_data(tags_data: dict[str, Any], song_id: Any, level_index: Any) -> list[str]:
+    charts = tags_data.get("charts", {}) if isinstance(tags_data, dict) else {}
+    item = charts.get(chart_key(song_id, level_index), {})
+    tags = item.get("final_tags") or item.get("tags") or item.get("llm_tags") or []
+    if not isinstance(tags, list):
+        return []
+    return filter_allowed_tags(str(tag) for tag in tags)
+
+
+def _b50_tag_tendency(b35: list[Any], b15: list[Any], limit: int = 5) -> list[str]:
+    tags_data = read_chart_tags()
+    counts: dict[str, int] = {}
+    for chart in [*b35, *b15]:
+        song_id = str(getattr(chart, "song_id", "") or "")
+        try:
+            level_index = int(getattr(chart, "level_index", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not song_id:
+            continue
+        for tag in _tags_from_data(tags_data, song_id, level_index):
+            counts[tag] = counts.get(tag, 0) + 1
+    return [
+        tag
+        for tag, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
 
 
 def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -176,42 +279,41 @@ def _draw_music_info_sync(music: Any, qqid: int, user: Any) -> Any:
 
 async def score_recommend_handler(event: AstrMessageEvent):
     if _RECOMMEND_SEMAPHORE.locked():
-        yield event.plain_result('吃分推荐正在处理其他请求，请稍后再试')
+        yield _reply_text_result(event, '吃分推荐正在处理其他请求，请稍后再试')
         return
 
     qq = extract_at_qqid(event) or event.get_sender_id()
     async with _RECOMMEND_SEMAPHORE:
-        yield event.plain_result('正在从水鱼查分器拉取 B50 并计算吃分推荐，请稍候...')
-
         try:
             user = await asyncio.wait_for(
                 maiApi.query_user_b50(qqid=int(qq)),
                 timeout=QUERY_B50_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            yield event.plain_result('水鱼 B50 查询超时，请稍后再试')
+            yield _reply_text_result(event, '水鱼 B50 查询超时，请稍后再试')
             return
         except (UserNotFoundError, UserNotExistsError):
-            yield event.plain_result('没有找到该玩家的水鱼 B50，请确认已绑定 QQ 或允许查询')
+            yield _reply_text_result(event, '没有找到该玩家的水鱼 B50，请确认已绑定 QQ 或允许查询')
             return
         except UserDisabledQueryError:
-            yield event.plain_result('该玩家关闭了水鱼第三方成绩查询')
+            yield _reply_text_result(event, '该玩家关闭了水鱼第三方成绩查询')
             return
         except Exception as exc:
-            yield event.plain_result(f'获取 B50 失败：{type(exc).__name__}')
+            yield _reply_text_result(event, f'获取 B50 失败：{type(exc).__name__}')
             return
 
         b35, b15 = _buckets(user)
         if not b35 and not b15:
-            yield event.plain_result('没有获取到可用 B50 数据')
+            yield _reply_text_result(event, '没有获取到可用 B50 数据')
             return
 
         candidates, meta = await asyncio.to_thread(_collect_candidates, user)
         if not meta.get("rating"):
-            yield event.plain_result('没有获取到可用 Rating，暂时无法计算吃分推荐区间')
+            yield _reply_text_result(event, '没有获取到可用 Rating，暂时无法计算吃分推荐区间')
             return
         if not candidates:
-            yield event.plain_result(
+            yield _reply_text_result(
+                event,
                 f'暂时没有找到符合条件的吃分候选谱面\n'
                 f'当前 Rating：{meta["rating"]}\n'
                 f'B35 推荐定数区间：{meta["b35_ds_min"]:.2f} - {meta["ds_max"]:.2f}\n'
@@ -220,12 +322,14 @@ async def score_recommend_handler(event: AstrMessageEvent):
             )
             return
 
-        candidate = candidates[0]
+        candidate = await _choose_candidate_for_user(str(qq), candidates)
         music = candidate["music"]
         fit_text = f'{candidate["fit_diff"]:.2f}' if candidate.get("fit_diff") is not None else '未知'
         fit_delta_text = f'{candidate["fit_delta"]:+.2f}' if candidate.get("fit_delta") is not None else '未知'
         tags = await asyncio.to_thread(get_chart_tags, candidate["song_id"], candidate["level_index"])
         tags_text = '、'.join(tags[:6]) if tags else '暂无'
+        tendency = await asyncio.to_thread(_b50_tag_tendency, b35, b15)
+        tendency_text = '、'.join(tendency) if tendency else '暂无'
         if candidate["floor_ra"] > 0:
             floor_text = f'当前已有最低分：{candidate["floor_ra"]}'
         else:
@@ -239,13 +343,15 @@ async def score_recommend_handler(event: AstrMessageEvent):
             f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["entry_margin"]}）\n'
             f'拟合定数：{fit_text}，实际定数：{candidate["ds"]}，拟合-实际：{fit_delta_text}\n'
             f'谱面标签：{tags_text}\n'
-            f'筛选：定数区间通过（下限不低于对应地板，上限不超过 {RECOMMEND_MAX_DS:.1f}）、SSS+ 理论分高于对应地板，且该谱面未以 SSS+ 出现在 B50 中。'
+            f'b50倾向：{tendency_text}'
         )
-        yield event.plain_result(reason)
         try:
             pic = await asyncio.to_thread(_draw_music_info_sync, music, int(event.get_sender_id()), user)
             chain = convert_message_segment_to_chain(pic)
-            yield event.chain_result(chain)
+            chain.insert(0, Comp.Plain(reason))
+            yield event.chain_result(_reply_chain(event, chain))
         except Exception:
             log.exception("吃分推荐谱面详情图生成失败")
-            yield event.plain_result('谱面详情图生成失败，但上面的文字推荐已可用')
+            yield event.chain_result(_reply_chain(event, [
+                Comp.Plain(reason + '\n谱面详情图生成失败，但上面的文字推荐已可用')
+            ]))

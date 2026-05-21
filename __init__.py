@@ -90,6 +90,7 @@ user_tokens_json: Path = static / 'user_import_tokens.json'     # 用户 Import-
 arcade_credentials_json: Path = static / 'arcade_credentials.json' # 用户机台凭据绑定
 roast_persona_json: Path = static / 'roast_personas.json'     # 锐评人格配置与样本
 webui_config_overrides_json: Path = static / 'webui_config_overrides.json' # WebUI 可编辑配置覆盖
+score_recommend_history_json: Path = static / 'score_recommend_history.json' # 吃分推荐最近谱面记录
 alias_file: Path = static / 'music_alias.json'                  # 别名暂存文件
 local_alias_file: Path = static / 'local_music_alias.json'      # 本地别名文件
 music_file: Path = static / 'music_data.json'                   # 曲目暂存文件
