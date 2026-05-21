@@ -342,7 +342,58 @@ class MaiMusic:
 
     async def get_plate_json(self) -> None:
         """获取所有牌子数据"""
-        self.total_plate_id_list = await maiApi.get_plate_json()
+        try:
+            self.total_plate_id_list = await maiApi.get_plate_json()
+        except Exception:
+            self.total_plate_id_list = self.build_plate_id_list_from_music()
+            raise
+
+    def build_plate_id_list_from_music(self) -> Dict[str, List[int]]:
+        """从已加载曲库生成牌子需求兜底数据。"""
+        result: Dict[str, List[int]] = defaultdict(list)
+        version_ids: Dict[str, List[int]] = defaultdict(list)
+        remaster_ids: List[int] = []
+        if not getattr(self, "total_list", None):
+            return {}
+        for music in self.total_list:
+            try:
+                music_id = int(music.id)
+            except Exception:
+                continue
+            if music_id >= 100000:
+                continue
+            version = str(music.basic_info.version or "")
+            if not version:
+                continue
+            if music_id not in version_ids[version]:
+                version_ids[version].append(music_id)
+            if len(music.ds) > 4 and len(music.charts) > 4:
+                remaster_ids.append(music_id)
+        for key, mapped_version in plate_to_dx_version.items():
+            if key in platecn:
+                continue
+            result[key].extend(version_ids.get(mapped_version, []))
+        for _, (versions, storage_key) in version_map.items():
+            for version in versions:
+                result[storage_key].extend(version_ids.get(version, []))
+        dx_groups = {
+            "熊&华": ["熊", "華"],
+            "爽&煌": ["爽", "煌"],
+            "宙&星": ["宙", "星"],
+            "祭&祝": ["祭", "祝"],
+            "双&宴": ["双", "宴"],
+            "镜&彩": ["镜", "彩"],
+        }
+        for storage_key, keys in dx_groups.items():
+            result[storage_key] = [
+                music_id
+                for key in keys
+                for music_id in version_ids.get(plate_to_dx_version.get(key, ""), [])
+            ]
+        for key in list(result.keys()):
+            result[key] = sorted(set(result[key]))
+        result["舞ReMASTER"] = sorted(set(remaster_ids))
+        return dict(result)
 
     def guess(self):
         """初始化猜歌数据"""
@@ -506,4 +557,3 @@ class Guess:
 
 
 guess = Guess()
-

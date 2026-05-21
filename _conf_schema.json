@@ -13,7 +13,7 @@
   },
   "maimaidxtoken": {
     "description": "水鱼 Developer-Token",
-    "hint": "开发者 Token，用于 /dev/player/records、/dev/player/record、/query_plate 等查分与牌子接口；不是 Import-Token。Import-Token 请用户使用 /绑定水鱼 命令自行绑定。",
+    "hint": "开发者 Token，用于 /dev/player/records、/dev/player/record、/query/plate 等玩家成绩接口；不是 Import-Token。Import-Token 请用户使用 /绑定水鱼 命令自行绑定。",
     "type": "string",
     "default": ""
   },

@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.api.event import AstrMessageEvent
 
 from ..command.mai_base import convert_message_segment_to_chain, extract_at_qqid
+from ..libraries.chart_tags.constants import MIN_TAG_DS
 from ..libraries.chart_tags.lookup import get_chart_tags
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
@@ -102,6 +103,9 @@ def _collect_candidates(user: Any, preferred_tags: list[str], b35_floor: int, b1
         for level_index in [2, 3, 4]:
             if level_index >= len(music.ds) or level_index >= len(music.charts):
                 continue
+            ds = float(music.ds[level_index])
+            if ds < MIN_TAG_DS:
+                continue
             key = (str(music.id), level_index)
             if key in owned:
                 continue
@@ -115,7 +119,7 @@ def _collect_candidates(user: Any, preferred_tags: list[str], b35_floor: int, b1
                 "title": music.title,
                 "level_index": level_index,
                 "level": music.level[level_index],
-                "ds": float(music.ds[level_index]),
+                "ds": ds,
                 "fit_diff": fit,
                 "tags": tags,
                 "is_new": bool(music.basic_info.is_new),

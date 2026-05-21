@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .rule_tags import filter_allowed_tags
 from .storage import read_chart_tags
 
 
@@ -16,7 +17,7 @@ def get_chart_tags(song_id: Any, level_index: Any) -> list[str]:
     tags = item.get("final_tags") or item.get("tags") or item.get("llm_tags") or []
     if not isinstance(tags, list):
         return []
-    return [str(tag) for tag in tags if str(tag).strip()]
+    return filter_allowed_tags(str(tag) for tag in tags)
 
 
 def format_chart_tags(song_id: Any, level_index: Any, max_tags: int = 4) -> str:

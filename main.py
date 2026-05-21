@@ -12,7 +12,7 @@ from .libraries.maimaidx_api_data import maiApi
 from .libraries.maimaidx_music import mai
 import sys
 
-@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.1.2")
+@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.1.3")
 class MaimaiDXPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -201,8 +201,11 @@ class MaimaiDXPlugin(Star):
             await mai.get_plate_json()
             log.info('牌子数据获取完成')
         except Exception as e:
-            log.error(f'加载maimai牌子数据失败: {e}')
-            log.error(traceback.format_exc())
+            fallback_count = len(getattr(mai, "total_plate_id_list", {}) or {})
+            if fallback_count:
+                log.warning(f'在线牌子数据加载失败，已使用本地曲库生成兜底牌子数据（{fallback_count} 组）: {type(e).__name__}')
+            else:
+                log.warning(f'在线牌子数据加载失败，且本地曲库兜底不可用；完成表/牌子进度可能暂不可用: {type(e).__name__}')
 
         if not music_loaded:
             log.warning('maimai曲库未加载，跳过猜歌数据初始化；依赖曲库的命令会提示稍后再试')

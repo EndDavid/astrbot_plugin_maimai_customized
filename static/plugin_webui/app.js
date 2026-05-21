@@ -17,11 +17,18 @@ const fileText = $('fileText');
 const importBtn = $('importBtn');
 const importResultBox = $('importResult');
 const tagsBox = $('tagsBox');
+const tagSearchInput = $('tagSearchInput');
+const tagSearchBtn = $('tagSearchBtn');
+const tagResultsBox = $('tagResultsBox');
+const tagEditorBox = $('tagEditorBox');
+const tagManageResultBox = $('tagManageResult');
 const toast = $('toast');
 const modal = $('personaModal');
 const modalList = $('personaModalList');
 let pendingForce = false;
 let cachedPersonas = [];
+let allowedChartTags = [];
+let currentChartTagKey = '';
 
 function api(path) {
   const token = location.search.replace(/^\?/, '');
@@ -106,14 +113,13 @@ async function loadTagsStatus() {
 function renderTagsStatus(data) {
   const total = Number(data.total || 0);
   const tagged = Number(data.tagged || 0);
-  const failed = Number(data.failed || 0);
-  const pending = Number(data.pending || 0);
+  const untagged = Number(data.untagged ?? Math.max(0, total - tagged));
   const percent = total ? Math.round(tagged * 1000 / total) / 10 : 0;
   tagsBox.innerHTML = '<div class="tag-hero"><div><b>' + percent + '%</b><span>已完成标签抽取</span></div><div class="tag-ring" style="--p:' + percent + '%"></div></div>' +
-    '<div class="tag-stats"><div><span>总谱面</span><b>' + total + '</b></div><div><span>已标注</span><b>' + tagged + '</b></div><div><span>待处理</span><b>' + pending + '</b></div><div><span>失败</span><b>' + failed + '</b></div></div>' +
-    '<div class="tip">更新会按水鱼曲目清单的谱面 ID 升序执行；每批最多 50 个谱面，失败会自动重试一次。为避免网站限制，批次之间会等待配置的间隔后继续。</div>' +
-    '<div class="tag-meta"><p><b>状态：</b>' + (data.running ? '运行中' : '未运行') + '</p><p><b>当前：</b>' + (data.current_title || data.last_title || '暂无') + '</p><p><b>下一批：</b>' + (data.next_run_at || '暂无') + '</p><p><b>文件：</b>' + (data.path || '') + '</p><p><b>最近错误：</b>' + (data.last_error || '无') + '</p></div>' +
-    '<div class="row"><button id="generateTagsBtn" class="secondary">生成基础标签文件</button><button id="startTagsBtn">启动自动更新</button><button id="stopTagsBtn" class="danger">停止任务</button><button id="refreshTagsBtn" class="ghost">刷新状态</button></div><div id="tagsResult" class="result"></div>';
+    '<div class="tag-stats"><div><span>总谱面</span><b>' + total + '</b></div><div><span>有标签的谱面数</span><b>' + tagged + '</b></div><div><span>无标签的谱面数</span><b>' + untagged + '</b></div></div>' +
+    '<div class="tip">插件更新会随静态资源携带已维护的标签 JSON；自动更新会以当前本地标签文件为底座，只补齐缺失或规则过期的谱面。自动更新只基于玩家资料和保守关键词规则抽取主观标签；已存在手动、最终或自动标签的谱面不会进入自动队列。没有可用资料时会标记为无资料，不会根据本地谱面信息猜标签。</div>' +
+    '<div class="tag-meta"><p><b>状态：</b>' + (data.running ? '运行中' : '未运行') + '</p><p><b>当前：</b>' + (data.current_title || data.last_title || '暂无') + '</p><p><b>批次：</b>' + (data.message || '暂无') + '</p><p><b>文件：</b>' + (data.path || '') + '</p><p><b>最近错误：</b>' + (data.last_error || '无') + '</p></div>' +
+    '<div class="row"><button id="generateTagsBtn" class="secondary">生成基础标签文件</button><button id="startTagsBtn">自动更新补缺</button><button id="stopTagsBtn" class="danger">停止任务</button><button id="refreshTagsBtn" class="ghost">刷新状态</button></div><div id="tagsResult" class="result"></div>';
   $('generateTagsBtn').addEventListener('click', () => withLoading($('generateTagsBtn'), generateTagsBase));
   $('startTagsBtn').addEventListener('click', () => withLoading($('startTagsBtn'), startTagsJob));
   $('stopTagsBtn').addEventListener('click', () => withLoading($('stopTagsBtn'), stopTagsJob));
@@ -144,6 +150,115 @@ async function stopTagsJob() {
   const data = await jsonFetch('/api/chart_tags/stop', { method: 'POST' });
   setTagsResult(Boolean(data.ok), data.message || JSON.stringify(data));
   await loadTagsStatus();
+}
+
+function setTagManageResult(ok, message) {
+  if (!tagManageResultBox) return;
+  tagManageResultBox.className = 'result ' + (ok ? 'ok' : 'err');
+  tagManageResultBox.textContent = message;
+  showToast(message);
+}
+
+function tagText(tags) {
+  return Array.isArray(tags) && tags.length ? tags.join(' / ') : '无';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+async function searchChartTags() {
+  if (!tagResultsBox) return;
+  const query = tagSearchInput.value.trim();
+  tagResultsBox.innerHTML = '<div class="empty">正在搜索谱面...</div>';
+  const data = await jsonFetch('/api/chart_tags/search?q=' + encodeURIComponent(query) + '&limit=60');
+  if (!data.ok) {
+    tagResultsBox.innerHTML = '<div class="empty">' + (data.message || '搜索失败') + '</div>';
+    return;
+  }
+  allowedChartTags = data.allowed_tags || allowedChartTags;
+  renderTagSearchResults(data.items || []);
+}
+
+function renderTagSearchResults(items) {
+  if (!items.length) {
+    tagResultsBox.innerHTML = '<div class="empty">没有找到匹配谱面</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  items.forEach(item => {
+    const div = document.createElement('button');
+    div.type = 'button';
+    div.className = 'chart-result';
+    div.dataset.key = item.key;
+    div.innerHTML = '<strong></strong><span></span><small></small>';
+    div.querySelector('strong').textContent = item.title || item.key;
+    div.querySelector('span').textContent = item.song_id + ' · ' + item.difficulty + ' · ' + item.level + ' · ' + (item.type || '');
+    div.querySelector('small').textContent = '标签：' + tagText(item.final_tags) + ' / 手动：' + tagText(item.manual_tags);
+    frag.appendChild(div);
+  });
+  tagResultsBox.innerHTML = '';
+  tagResultsBox.appendChild(frag);
+}
+
+async function loadChartTagDetail(key) {
+  currentChartTagKey = key;
+  tagEditorBox.innerHTML = '<div class="empty">正在读取谱面标签...</div>';
+  const data = await jsonFetch('/api/chart_tags/' + encodeURIComponent(key));
+  if (!data.ok) {
+    tagEditorBox.innerHTML = '<div class="empty">' + (data.message || '读取失败') + '</div>';
+    return;
+  }
+  allowedChartTags = data.allowed_tags || allowedChartTags;
+  renderChartTagEditor(data.item);
+}
+
+function renderChartTagEditor(item) {
+  const selected = new Set(item.manual_tags || []);
+  const checks = allowedChartTags.map(tag => '<label class="tag-check"><input type="checkbox" value="' + escapeHtml(tag) + '" ' + (selected.has(tag) ? 'checked' : '') + '><span>' + escapeHtml(tag) + '</span></label>').join('');
+  const evidence = (item.evidence || []).slice(0, 6).map(e => '<li><a href="' + escapeHtml(e.url || '#') + '" target="_blank" rel="noreferrer"></a><p></p></li>').join('');
+  tagEditorBox.innerHTML = '<div class="chart-editor-head"><div><h4></h4><p class="muted"></p></div><span class="badge"></span></div>' +
+    '<div class="tag-meta compact"><p><b>谱师：</b>' + escapeHtml(item.charter || '未知') + '</p><p><b>定数：</b>' + escapeHtml(item.ds ?? '未知') + ' / 拟合 ' + escapeHtml(item.fit_diff ?? '未知') + '</p><p><b>物量：</b>' + escapeHtml(JSON.stringify(item.notes || {})) + '</p><p><b>自动标签：</b>' + escapeHtml(tagText(item.llm_tags)) + '</p><p><b>最终标签：</b>' + escapeHtml(tagText(item.final_tags)) + '</p></div>' +
+    '<div class="tag-check-grid">' + checks + '</div>' +
+    '<div class="row"><button id="saveManualTagsBtn">保存手动标签</button><button id="clearManualTagsBtn" class="ghost">清空手动标签</button></div>' +
+    '<details class="evidence-box"><summary>查看搜索证据</summary><ol>' + evidence + '</ol></details>';
+  tagEditorBox.querySelector('h4').textContent = item.title || item.key;
+  tagEditorBox.querySelector('.chart-editor-head .muted').textContent = item.song_id + ' · ' + item.difficulty + ' · ' + item.level + ' · ' + (item.type || '');
+  tagEditorBox.querySelector('.badge').textContent = item.tag_status || '未处理';
+  tagEditorBox.querySelectorAll('.evidence-box li').forEach((li, idx) => {
+    const e = (item.evidence || [])[idx] || {};
+    li.querySelector('a').textContent = e.title || e.url || '搜索证据';
+    li.querySelector('p').textContent = e.summary || '';
+  });
+  $('saveManualTagsBtn').addEventListener('click', () => withLoading($('saveManualTagsBtn'), saveManualTags));
+  $('clearManualTagsBtn').addEventListener('click', () => withLoading($('clearManualTagsBtn'), clearManualTags));
+}
+
+function selectedManualTags() {
+  return Array.from(tagEditorBox.querySelectorAll('.tag-check input:checked')).map(input => input.value);
+}
+
+async function saveManualTags() {
+  if (!currentChartTagKey) {
+    setTagManageResult(false, '请先选择谱面');
+    return;
+  }
+  const data = await jsonFetch('/api/chart_tags/' + encodeURIComponent(currentChartTagKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manual_tags: selectedManualTags() })
+  });
+  setTagManageResult(Boolean(data.ok), data.message || JSON.stringify(data));
+  if (data.ok) {
+    renderChartTagEditor(data.item);
+    await loadTagsStatus();
+    await searchChartTags();
+  }
+}
+
+async function clearManualTags() {
+  tagEditorBox.querySelectorAll('.tag-check input').forEach(input => input.checked = false);
+  await saveManualTags();
 }
 
 async function loadCommands() {
@@ -369,7 +484,7 @@ async function importJson() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadOverview(), loadCommands(), loadConfig(), loadList(), loadTagsStatus()]);
+  await Promise.all([loadOverview(), loadCommands(), loadConfig(), loadList(), loadTagsStatus(), searchChartTags()]);
 }
 
 function openPersonaModal() {
@@ -400,6 +515,13 @@ refreshBtn.addEventListener('click', () => withLoading(refreshBtn, async () => {
 }));
 importBtn.addEventListener('click', () => withLoading(importBtn, importJson));
 $('refreshAllBtn').addEventListener('click', () => withLoading($('refreshAllBtn'), refreshAll));
+tagSearchBtn.addEventListener('click', () => withLoading(tagSearchBtn, searchChartTags));
+tagSearchInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    withLoading(tagSearchBtn, searchChartTags);
+  }
+});
 jsonFileInput.addEventListener('change', () => {
   const file = jsonFileInput.files && jsonFileInput.files[0];
   fileText.textContent = file ? file.name : '选择文件';
@@ -419,6 +541,10 @@ modalList.addEventListener('click', event => {
 });
 modal.addEventListener('click', event => {
   if (event.target === modal) closePersonaModal();
+});
+tagResultsBox.addEventListener('click', event => {
+  const target = event.target.closest('.chart-result');
+  if (target && target.dataset.key) loadChartTagDetail(target.dataset.key);
 });
 window.addEventListener('load', async () => {
   await refreshAll();

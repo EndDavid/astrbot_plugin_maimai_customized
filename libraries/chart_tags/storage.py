@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+from pathlib import Path
 from typing import Any
 
 from ... import static
@@ -8,6 +11,7 @@ from ... import static
 TAGS_DIR = static
 CHART_TAGS_FILE = TAGS_DIR / "maimaidx_chart_tags.json"
 JOB_STATE_FILE = TAGS_DIR / "maimaidx_chart_tags_job.json"
+_JSON_LOCK = threading.RLock()
 
 
 def ensure_tags_dir() -> None:
@@ -16,16 +20,19 @@ def ensure_tags_dir() -> None:
 
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     ensure_tags_dir()
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    with _JSON_LOCK:
+        temp_path.write_text(text, encoding="utf-8")
+        temp_path.replace(path)
 
 
 def read_chart_tags() -> dict[str, Any]:
     if not CHART_TAGS_FILE.exists():
         return {}
     try:
-        return json.loads(CHART_TAGS_FILE.read_text(encoding="utf-8"))
+        with _JSON_LOCK:
+            return json.loads(CHART_TAGS_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -34,7 +41,8 @@ def read_job_state() -> dict[str, Any]:
     if not JOB_STATE_FILE.exists():
         return {}
     try:
-        data = json.loads(JOB_STATE_FILE.read_text(encoding="utf-8"))
+        with _JSON_LOCK:
+            data = json.loads(JOB_STATE_FILE.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}

@@ -11,7 +11,9 @@ from aiohttp import web
 from .. import Root, log, webui_config_overrides_json
 from .arcade_credential_manager import get_arcade_credential_manager
 from .chart_tags import ChartTagUpdateJob, generate_chart_tags_file
-from .maimaidx_api_data import maiApi
+from .chart_tags.constants import ALLOWED_TAGS, TAG_CATEGORIES
+from .chart_tags.rule_tags import filter_allowed_tags
+from .chart_tags.storage import read_chart_tags, write_json_atomic, CHART_TAGS_FILE
 from .roast.llm_client import resolve_roast_provider_id
 from .roast_persona_manager import RoastPersonaManager
 from .user_token_manager import get_token_manager
@@ -58,6 +60,9 @@ class RoastPersonaWebUI:
         app.router.add_post("/api/chart_tags/generate", self.chart_tags_generate)
         app.router.add_post("/api/chart_tags/start", self.chart_tags_start)
         app.router.add_post("/api/chart_tags/stop", self.chart_tags_stop)
+        app.router.add_get("/api/chart_tags/search", self.chart_tags_search)
+        app.router.add_get("/api/chart_tags/{key}", self.chart_tags_get)
+        app.router.add_post("/api/chart_tags/{key}", self.chart_tags_save)
         app.router.add_get("/api/personas", self.list_personas)
         app.router.add_post("/api/persona", self.save_persona)
         app.router.add_post("/api/import_json", self.import_json)
@@ -257,7 +262,38 @@ button:hover {{ background: #2447c4; }}
     async def chart_tags_status(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
             return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
-        return web.json_response(self.chart_tag_job.status())
+        return web.json_response(await asyncio.to_thread(self.chart_tag_job.status))
+
+    async def chart_tags_search(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
+        query = str(request.query.get("q", "") or "").strip().lower()
+        limit = max(1, min(80, int(request.query.get("limit", "30") or 30)))
+        items = await asyncio.to_thread(self._search_chart_tag_items, query, limit)
+        return web.json_response({"ok": True, "items": items, "allowed_tags": ALLOWED_TAGS})
+
+    async def chart_tags_get(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
+        key = request.match_info["key"]
+        item = await asyncio.to_thread(self._get_chart_tag_detail_item, key)
+        if item is None:
+            return web.json_response({"ok": False, "message": "谱面不存在"}, status=404)
+        return web.json_response({"ok": True, "item": item, "allowed_tags": ALLOWED_TAGS})
+
+    async def chart_tags_save(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
+        key = request.match_info["key"]
+        payload = await request.json()
+        tags = payload.get("manual_tags", []) if isinstance(payload, dict) else []
+        if not isinstance(tags, list):
+            return web.json_response({"ok": False, "message": "manual_tags 必须是数组"}, status=400)
+        manual_tags = filter_allowed_tags(str(item) for item in tags)
+        result = await asyncio.to_thread(self._save_chart_tags_sync, key, manual_tags)
+        if result is None:
+            return web.json_response({"ok": False, "message": "谱面不存在"}, status=404)
+        return web.json_response({"ok": True, "message": f"已保存 {len(manual_tags)} 个手动标签", **result, "status": await asyncio.to_thread(self.chart_tag_job.status)})
 
     async def chart_tags_generate(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
@@ -275,14 +311,99 @@ button:hover {{ background: #2447c4; }}
             return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
         data = await request.json() if request.can_read_body else {}
         batch_size = int((data or {}).get("batch_size", 50) or 50)
-        interval_seconds = int((data or {}).get("interval_seconds", self.config.get("chart_tag_batch_interval_seconds", 300) or 300) or 300)
-        result = await self.chart_tag_job.start(batch_size=batch_size, interval_seconds=interval_seconds)
+        result = await self.chart_tag_job.start(batch_size=batch_size)
         return web.json_response(result)
 
     async def chart_tags_stop(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
             return web.json_response({"ok": False, "message": "Forbidden"}, status=403)
         return web.json_response(await self.chart_tag_job.stop())
+
+    def _search_chart_tag_items(self, query: str, limit: int) -> list[dict[str, Any]]:
+        data = read_chart_tags()
+        charts = data.get("charts", {}) if isinstance(data, dict) else {}
+        items = []
+        for key, chart in charts.items():
+            if not isinstance(chart, dict):
+                continue
+            haystack = " ".join(str(chart.get(field, "") or "") for field in ("song_id", "title", "difficulty", "level", "type", "charter")).lower()
+            if query and query not in haystack:
+                continue
+            items.append(self._chart_tag_summary(key, chart))
+            if len(items) >= limit:
+                break
+        return items
+
+    def _get_chart_tag_detail_item(self, key: str) -> dict[str, Any] | None:
+        data = read_chart_tags()
+        charts = data.get("charts", {}) if isinstance(data, dict) else {}
+        chart = charts.get(key)
+        if not isinstance(chart, dict):
+            return None
+        return self._chart_tag_detail(key, chart)
+
+    def _save_chart_tags_sync(self, key: str, manual_tags: list[str]) -> dict[str, Any] | None:
+        data = read_chart_tags()
+        charts = data.get("charts", {}) if isinstance(data, dict) else {}
+        chart = charts.get(key)
+        if not isinstance(chart, dict):
+            return None
+        chart["manual_tags"] = manual_tags
+        llm_tags = filter_allowed_tags(chart.get("llm_tags", []))
+        final_tags = filter_allowed_tags([*llm_tags, *manual_tags])
+        chart["llm_tags"] = llm_tags
+        chart["final_tags"] = final_tags
+        chart["tags"] = final_tags
+        chart["tag_categories"] = {tag: TAG_CATEGORIES[tag] for tag in final_tags if tag in TAG_CATEGORIES}
+        if final_tags:
+            chart["tag_status"] = "done"
+            chart["tag_error"] = ""
+        elif chart.get("tag_status") == "done":
+            chart["tag_status"] = ""
+        chart["updated_at"] = self._now_text()
+        charts[key] = chart
+        data["charts"] = charts
+        data["updated_at"] = self._now_text()
+        write_json_atomic(CHART_TAGS_FILE, data)
+        return {"item": self._chart_tag_detail(key, chart)}
+
+    def _chart_tag_summary(self, key: str, chart: dict[str, Any]) -> dict[str, Any]:
+        manual_tags = filter_allowed_tags(chart.get("manual_tags", []))
+        llm_tags = filter_allowed_tags(chart.get("llm_tags", []))
+        final_tags = filter_allowed_tags(chart.get("final_tags") or chart.get("tags") or [*llm_tags, *manual_tags])
+        return {
+            "key": key,
+            "song_id": chart.get("song_id", ""),
+            "title": chart.get("title", ""),
+            "difficulty": chart.get("difficulty", ""),
+            "level": chart.get("level", ""),
+            "type": chart.get("type", ""),
+            "manual_tags": manual_tags,
+            "llm_tags": llm_tags,
+            "final_tags": final_tags,
+            "tag_status": chart.get("tag_status", ""),
+            "tag_error": chart.get("tag_error", ""),
+        }
+
+    def _chart_tag_detail(self, key: str, chart: dict[str, Any]) -> dict[str, Any]:
+        item = self._chart_tag_summary(key, chart)
+        item.update({
+            "ds": chart.get("ds"),
+            "fit_diff": chart.get("fit_diff"),
+            "bpm": chart.get("bpm"),
+            "artist": chart.get("artist", ""),
+            "genre": chart.get("genre", ""),
+            "version": chart.get("version", ""),
+            "charter": chart.get("charter", ""),
+            "notes": chart.get("notes", {}),
+            "evidence": chart.get("evidence", []),
+            "updated_at": chart.get("updated_at", ""),
+        })
+        return item
+
+    def _now_text(self) -> str:
+        from datetime import datetime, timedelta, timezone
+        return datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
 
     async def save_persona(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):

@@ -238,11 +238,10 @@ class MaimaiAPI:
 
     async def get_plate_json(self) -> Dict:
         """获取所有版本牌子完成需求"""
-        async with ClientSession(timeout=ClientTimeout(total=30)) as session:
-            async with session.get('https://www.diving-fish.com/api/maimaidxprober/plate_data') as res:
-                if res.status == 200:
-                    return await res.json()
-                raise UnknownError
+        result = await self._requestalias('GET', '/maimaidxplate')
+        if result.code == 0:
+            return result.content
+        raise UnknownError
 
     async def get_alias(self) -> Dict[str, Union[str, int, List[str]]]:
         """获取所有别名"""

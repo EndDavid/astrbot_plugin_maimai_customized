@@ -5,8 +5,8 @@ from typing import Any
 
 from ... import diffs
 from ..maimaidx_music import mai
-from .constants import ALLOWED_TAGS, DIFFICULTY_NAMES, TARGET_LEVEL_INDEXES
-from .storage import CHART_TAGS_FILE, write_json_atomic
+from .constants import ALLOWED_TAGS, DIFFICULTY_NAMES, MIN_TAG_DS, TAG_RULE_VERSION, TARGET_LEVEL_INDEXES
+from .storage import CHART_TAGS_FILE, read_chart_tags, write_json_atomic
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -43,15 +43,20 @@ def _sort_key(music: Any) -> tuple[int, str]:
 
 def build_chart_tag_payload() -> dict[str, Any]:
     generated_at = datetime.now(CN_TZ).isoformat(timespec="seconds")
+    old_data = read_chart_tags()
+    old_charts = old_data.get("charts", {}) if isinstance(old_data, dict) else {}
     charts = {}
     for music in sorted(mai.total_list, key=_sort_key):
         for level_index in TARGET_LEVEL_INDEXES:
             if level_index >= len(music.charts) or level_index >= len(music.ds) or level_index >= len(music.level):
                 continue
+            ds = float(music.ds[level_index])
+            if ds < MIN_TAG_DS:
+                continue
             chart = music.charts[level_index]
             notes = _note_dict(chart)
             chart_key = f"{music.id}:{level_index}"
-            charts[chart_key] = {
+            item = {
                 "song_id": str(music.id),
                 "chart_id": int(music.cids[level_index]) if level_index < len(music.cids) else None,
                 "title": music.title,
@@ -59,7 +64,7 @@ def build_chart_tag_payload() -> dict[str, Any]:
                 "difficulty": DIFFICULTY_NAMES.get(level_index, diffs[level_index] if level_index < len(diffs) else str(level_index)),
                 "level_index": level_index,
                 "level": music.level[level_index],
-                "ds": float(music.ds[level_index]),
+                "ds": ds,
                 "fit_diff": _fit_diff(music, level_index),
                 "bpm": int(music.basic_info.bpm),
                 "artist": music.basic_info.artist,
@@ -76,11 +81,30 @@ def build_chart_tag_payload() -> dict[str, Any]:
                 "evidence": [],
                 "updated_at": generated_at,
             }
+            old_item = old_charts.get(chart_key, {}) if isinstance(old_charts, dict) else {}
+            if isinstance(old_item, dict):
+                for field in (
+                    "manual_tags",
+                    "llm_tags",
+                    "final_tags",
+                    "tags",
+                    "tag_categories",
+                    "evidence",
+                    "tag_status",
+                    "tag_error",
+                    "tag_rule_version",
+                    "updated_at",
+                ):
+                    if field in old_item:
+                        item[field] = old_item[field]
+            charts[chart_key] = item
     return {
         "version": 1,
         "generated_at": generated_at,
         "sort": "song_id asc, level_index asc",
         "target_difficulties": [DIFFICULTY_NAMES[index] for index in TARGET_LEVEL_INDEXES],
+        "min_ds": MIN_TAG_DS,
+        "tag_rule_version": TAG_RULE_VERSION,
         "allowed_tags": ALLOWED_TAGS,
         "charts": charts,
     }
