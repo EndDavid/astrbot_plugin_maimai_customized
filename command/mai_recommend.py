@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import math
+import random
 from typing import Any
 
 import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent
 
-from .. import log, score_recommend_history_json
+from .. import log
 from ..command.mai_base import convert_message_segment_to_chain, extract_at_qqid
 from ..libraries.chart_tags.lookup import chart_key, get_chart_tags
 from ..libraries.chart_tags.rule_tags import filter_allowed_tags
@@ -25,9 +25,8 @@ RECOMMEND_RATING_HIGH_DIVISOR = 1075
 RECOMMEND_MAX_DS = 15.0
 RECOMMEND_LEVEL_INDEXES = (2, 3, 4)
 RECOMMEND_CONCURRENCY_LIMIT = 2
-RECOMMEND_HISTORY_SIZE = 3
+RECOMMEND_RANDOM_POOL_MAX_SIZE = 10
 _RECOMMEND_SEMAPHORE = asyncio.Semaphore(RECOMMEND_CONCURRENCY_LIMIT)
-_HISTORY_LOCK = asyncio.Lock()
 
 
 def _sssp_rating(ds: float) -> int:
@@ -95,10 +94,6 @@ def _sort_key(candidate: dict[str, Any]) -> tuple[float, bool, float, int, str]:
     )
 
 
-def _candidate_key(candidate: dict[str, Any]) -> str:
-    return f'{candidate["song_id"]}:{candidate["level_index"]}'
-
-
 def _reply_chain(event: AstrMessageEvent, items: list[Any]) -> list[Any]:
     chain = list(items)
     if getattr(event, "message_obj", None):
@@ -112,56 +107,26 @@ def _reply_text_result(event: AstrMessageEvent, text: str) -> Any:
     return event.chain_result(_reply_chain(event, [Comp.Plain(text)]))
 
 
-def _read_history() -> dict[str, list[str]]:
+def _candidate_pool(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return candidates[:min(len(candidates), RECOMMEND_RANDOM_POOL_MAX_SIZE)]
+
+
+def _choose_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    pool = _candidate_pool(candidates)
+    if not pool:
+        return None
+    return random.choice(pool)
+
+
+def _pool_size(candidates: list[dict[str, Any]]) -> int:
+    return len(_candidate_pool(candidates))
+
+
+def _candidate_rank(candidates: list[dict[str, Any]], candidate: dict[str, Any]) -> int:
     try:
-        if not score_recommend_history_json.exists():
-            return {}
-        data = json.loads(score_recommend_history_json.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {}
-        history: dict[str, list[str]] = {}
-        for qq, items in data.items():
-            if not isinstance(items, list):
-                continue
-            cleaned = [str(item) for item in items if isinstance(item, (str, int))]
-            history[str(qq)] = cleaned[:RECOMMEND_HISTORY_SIZE]
-        return history
-    except Exception as exc:
-        log.warning(f"吃分推荐历史读取失败，已忽略历史记录: {exc}")
-        return {}
-
-
-def _write_history(history: dict[str, list[str]]) -> None:
-    score_recommend_history_json.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = score_recommend_history_json.with_suffix(score_recommend_history_json.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(score_recommend_history_json)
-
-
-def _select_candidate(candidates: list[dict[str, Any]], recent_keys: list[str]) -> dict[str, Any]:
-    if len(candidates) <= RECOMMEND_HISTORY_SIZE:
-        return candidates[0]
-
-    recent = set(recent_keys[:RECOMMEND_HISTORY_SIZE])
-    for candidate in candidates:
-        if _candidate_key(candidate) not in recent:
-            return candidate
-    return candidates[0]
-
-
-def _update_history(history: dict[str, list[str]], qq: str, candidate: dict[str, Any]) -> None:
-    key = _candidate_key(candidate)
-    stack = [item for item in history.get(qq, []) if item != key]
-    history[qq] = [key, *stack][:RECOMMEND_HISTORY_SIZE]
-
-
-async def _choose_candidate_for_user(qq: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    async with _HISTORY_LOCK:
-        history = await asyncio.to_thread(_read_history)
-        candidate = _select_candidate(candidates, history.get(str(qq), []))
-        _update_history(history, str(qq), candidate)
-        await asyncio.to_thread(_write_history, history)
-        return candidate
+        return candidates.index(candidate) + 1
+    except ValueError:
+        return 1
 
 
 def _tags_from_data(tags_data: dict[str, Any], song_id: Any, level_index: Any) -> list[str]:
@@ -322,7 +287,10 @@ async def score_recommend_handler(event: AstrMessageEvent):
             )
             return
 
-        candidate = await _choose_candidate_for_user(str(qq), candidates)
+        candidate = await asyncio.to_thread(_choose_candidate, candidates)
+        if candidate is None:
+            yield _reply_text_result(event, '暂时没有找到符合条件的吃分候选谱面')
+            return
         music = candidate["music"]
         fit_text = f'{candidate["fit_diff"]:.2f}' if candidate.get("fit_diff") is not None else '未知'
         fit_delta_text = f'{candidate["fit_delta"]:+.2f}' if candidate.get("fit_delta") is not None else '未知'
@@ -342,6 +310,7 @@ async def score_recommend_handler(event: AstrMessageEvent):
             f'推荐分区：{candidate["bucket"]}，{floor_text}\n'
             f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["entry_margin"]}）\n'
             f'拟合定数：{fit_text}，实际定数：{candidate["ds"]}，拟合-实际：{fit_delta_text}\n'
+            f'候选池：前 {_pool_size(candidates)} 首中随机，第 {_candidate_rank(candidates, candidate)} 位\n'
             f'谱面标签：{tags_text}\n'
             f'b50倾向：{tendency_text}'
         )
