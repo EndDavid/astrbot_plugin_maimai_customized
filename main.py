@@ -432,7 +432,7 @@ class MaimaiDXPlugin(Star):
             yield result
 
     # 成绩查询命令
-    @filter.regex(r'^(更新b50|导)(?:\s+SGWCMAID\S+)?$')
+    @filter.regex(r'^(更新[bB]50|导)(?:[\s:：]+.*)?$')
     async def score_update(self, event: AstrMessageEvent):
         group_id = event.message_obj.group_id
         if group_id and not self._is_group_enabled(str(group_id)):

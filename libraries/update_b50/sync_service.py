@@ -86,7 +86,7 @@ class MaimaiUpdateService:
             ("InvalidPlayerIdentifierError", "水鱼 Import-Token 无效，或水鱼账号不允许导入，请重新绑定 Token。"),
             ("InvalidDeveloperTokenError", "水鱼接口拒绝了请求，请检查 Token 或稍后再试。"),
             ("PrivacyLimitationError", "水鱼账号未允许第三方访问，请先在水鱼查分器中开启相关权限。"),
-            ("HTTPError", "网络请求失败，请检查 AstrBot 所在机器的网络或代理设置。"),
+            ("HTTPError", "网络请求失败，请检查 AstrBot 所在机器的网络或代理设置；如使用 socks5 代理，请安装 socksio 或改用 HTTP 代理。"),
         )
         for class_name, message in checks:
             cls = imports.get(class_name)

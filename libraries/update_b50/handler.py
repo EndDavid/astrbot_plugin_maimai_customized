@@ -35,7 +35,7 @@ def get_service(config: dict | None) -> MaimaiUpdateService:
 
 async def sgwcmaid_update_handler(event: Any, context: Any | None = None, config: dict | None = None) -> AsyncGenerator[str, None]:
     message_str = (getattr(event, "message_str", "") or "").strip()
-    raw_arg = re.sub(r"^(更新b50|导)\s*", "", message_str, flags=re.IGNORECASE).strip()
+    raw_arg = re.sub(r"^(更新b50|导)(?:[\s:：]+)?", "", message_str, flags=re.IGNORECASE).strip()
     sgid = extract_sgid(raw_arg)
     qqid = str(event.get_sender_id())
     mgr = get_token_manager()

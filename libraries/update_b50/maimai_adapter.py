@@ -61,7 +61,7 @@ class MaimaiAdapter:
             return self._imports
         self.ensure_dependency_versions()
         try:
-            from maimai_py import ArcadeProvider, DivingFishProvider, MaimaiClient, PlayerIdentifier
+            from maimai_py import ArcadeProvider, DivingFishProvider, MaimaiClientMultithreading, PlayerIdentifier
             from maimai_py import exceptions as maimai_exceptions
             import httpx
         except SyntaxError as exc:
@@ -77,7 +77,7 @@ class MaimaiAdapter:
         self._imports = {
             "ArcadeProvider": ArcadeProvider,
             "DivingFishProvider": DivingFishProvider,
-            "MaimaiClient": MaimaiClient,
+            "MaimaiClient": MaimaiClientMultithreading,
             "PlayerIdentifier": PlayerIdentifier,
             "AimeServerError": getattr(maimai_exceptions, "AimeServerError", None),
             "ArcadeError": getattr(maimai_exceptions, "ArcadeError", None),
@@ -97,7 +97,15 @@ class MaimaiAdapter:
     def client(self) -> Any:
         imports = self.load_imports()
         if self._client is None:
-            self._client = imports["MaimaiClient"](timeout=self.timeout)
+            kwargs = {"trust_env": False}
+            if self.http_proxy:
+                kwargs["proxy"] = self.http_proxy
+            try:
+                self._client = imports["MaimaiClient"](timeout=self.timeout, **kwargs)
+            except ImportError as exc:
+                if "socks" in str(exc).lower():
+                    raise MaimaiDependencyError("当前 maimai_http_proxy 使用 socks 代理，但缺少 socksio 依赖。请安装 socksio，或将代理改为 HTTP 代理。") from exc
+                raise
         return self._client
 
     def arcade_provider(self) -> Any:
