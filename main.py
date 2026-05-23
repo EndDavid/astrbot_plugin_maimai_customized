@@ -3,6 +3,7 @@ from astrbot.core.star.filter.event_message_type import EventMessageType
 from astrbot.api.star import Context, Star, register
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+import asyncio
 import traceback
 import json
 
@@ -12,7 +13,7 @@ from .libraries.maimaidx_api_data import maiApi
 from .libraries.maimaidx_music import mai
 import sys
 
-@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.3.1")
+@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.4.0")
 class MaimaiDXPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -20,6 +21,7 @@ class MaimaiDXPlugin(Star):
         self.config.update(self._load_webui_config_overrides())
         self.scheduler = AsyncIOScheduler()
         self.scheduler.start()
+        self._startup_tasks: set[asyncio.Task] = set()
         
         # 群组启用状态（存储禁用的群组ID）
         self.disabled_groups = set()  # 禁用插件的群组ID集合
@@ -87,26 +89,10 @@ class MaimaiDXPlugin(Star):
             return {}
 
     async def initialize(self):
-        """插件初始化，加载数据并设置定时任务"""
+        """插件初始化，快速完成注册并将耗时资源加载移至后台。"""
         for step_name, step_func in [
             ("加载禁用群组列表", self._load_disabled_groups),
             ("设置配置", self._setup_configuration),
-        ]:
-            try:
-                step_func()
-            except Exception as e:
-                log.error(f'{step_name}失败: {e}')
-                log.error(traceback.format_exc())
-
-        try:
-            await self._load_maimai_data()
-        except Exception as e:
-            log.error(f'maimai数据加载流程出现未捕获异常: {e}')
-            log.error(traceback.format_exc())
-
-        for step_name, step_func in [
-            ("加载图片到内存", self._load_images_to_memory),
-            ("执行初始检查", self._perform_initial_checks),
             ("设置定时任务", self._setup_schedulers),
         ]:
             try:
@@ -115,8 +101,55 @@ class MaimaiDXPlugin(Star):
                 log.error(f'{step_name}失败: {e}')
                 log.error(traceback.format_exc())
 
+        try:
+            await self._load_local_maimai_cache()
+        except Exception as e:
+            log.warning(f'本地maimai缓存加载失败，将继续后台刷新: {type(e).__name__}: {e}')
+            log.warning(traceback.format_exc())
+
+        self._schedule_startup_background_tasks()
+
         log.info('maimaiDX插件初始化完成')
-        log.info('命令注册完成，等待用户输入...')
+        log.info('命令注册完成，耗时资源将在后台加载')
+
+    def _schedule_startup_background_tasks(self):
+        self._create_startup_task(self._load_startup_data(), "maimai数据后台加载")
+
+    def _create_startup_task(self, coro, name: str) -> None:
+        task = asyncio.create_task(coro, name=name)
+        self._startup_tasks.add(task)
+        task.add_done_callback(lambda finished: self._finish_startup_task(finished, name))
+
+    def _finish_startup_task(self, task: asyncio.Task, name: str) -> None:
+        self._startup_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.error(f'{name}失败: {type(exc).__name__}: {exc}')
+            log.error(''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+
+    async def _load_startup_data(self):
+        try:
+            await self._load_maimai_data()
+        except Exception as e:
+            log.error(f'maimai数据加载流程出现未捕获异常: {e}')
+            log.error(traceback.format_exc())
+        try:
+            self._perform_initial_checks()
+        except Exception as e:
+            log.error(f'执行初始检查失败: {e}')
+            log.error(traceback.format_exc())
+
+    async def _load_local_maimai_cache(self):
+        log.info('正在从本地缓存恢复maimai运行数据')
+        try:
+            await mai.load_local_cache()
+            count = len(mai.total_list) if hasattr(mai, "total_list") and mai.total_list else 0
+            log.info(f'本地maimai缓存恢复完成，歌曲数量: {count}')
+        except Exception as e:
+            log.warning(f'本地maimai缓存恢复失败: {e}')
+            raise
 
     def _load_disabled_groups(self):
         """加载禁用群组列表"""
@@ -705,6 +738,12 @@ class MaimaiDXPlugin(Star):
             yield result
 
     async def terminate(self):
+        if self._startup_tasks:
+            tasks = list(self._startup_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._startup_tasks.clear()
         if self.roast_persona_webui:
             await self.roast_persona_webui.stop()
         try:

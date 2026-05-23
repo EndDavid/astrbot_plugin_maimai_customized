@@ -237,6 +237,35 @@ class AliasList(List[Alias]):
         return alias_list
 
 
+def _build_alias_list(
+    alias_data: List[Dict[str, Union[int, str, List[str]]]],
+    local_alias_data: Dict[str, List[str]],
+) -> AliasList:
+    total_alias_list = AliasList()
+    for _a in filter(lambda x: mai.total_list.by_id(x['SongID']), alias_data):
+        if (song_id := str(_a['SongID'])) in local_alias_data:
+            _a['Alias'].extend(local_alias_data[song_id])
+        total_alias_list.append(Alias.model_validate(_a))
+    return total_alias_list
+
+
+async def get_music_alias_list_from_cache() -> AliasList:
+    """从本地暂存文件加载所有别名。"""
+    if local_alias_file.exists():
+        local_alias_data = await openfile(local_alias_file)
+    else:
+        local_alias_data = {}
+    try:
+        alias_data = await openfile(alias_file)
+    except FileNotFoundError:
+        log.error(aliaserror)
+        raise
+    if not alias_data:
+        log.error(aliaserror)
+        raise ValueError
+    return _build_alias_list(alias_data, local_alias_data)
+
+
 async def get_music_alias_list() -> AliasList:
     """获取所有别名"""
     if local_alias_file.exists():
@@ -263,13 +292,39 @@ async def get_music_alias_list() -> AliasList:
             log.error(aliaserror)
             raise ValueError
 
-    total_alias_list = AliasList()
-    for _a in filter(lambda x: mai.total_list.by_id(x['SongID']), alias_data):
-        if (song_id := str(_a['SongID'])) in local_alias_data:
-            _a['Alias'].extend(local_alias_data[song_id])
-        total_alias_list.append(Alias.model_validate(_a))
+    return _build_alias_list(alias_data, local_alias_data)
 
-    return total_alias_list
+
+def _build_music_list(music_data: List[Dict], chart_stats: Dict) -> MusicList:
+    total_list = MusicList()
+    for music in music_data:
+        if music['id'] in chart_stats['charts']:
+            _stats = [
+                _data if _data else None
+                for _data in chart_stats['charts'][music['id']]
+            ] if {} in chart_stats['charts'][music['id']] else \
+            chart_stats['charts'][music['id']]
+        else:
+            _stats = None
+        total_list.append(Music(stats=_stats, **music))
+    return total_list
+
+
+async def get_music_list_from_cache() -> MusicList:
+    """从本地暂存文件加载所有曲目数据。"""
+    try:
+        music_data = await openfile(music_file)
+    except FileNotFoundError:
+        log.error(dataerror)
+        raise
+
+    try:
+        chart_stats = await openfile(chart_file)
+    except FileNotFoundError:
+        log.error(charterror)
+        raise
+
+    return _build_music_list(music_data, chart_stats)
 
 
 async def get_music_list() -> MusicList:
@@ -298,19 +353,7 @@ async def get_music_list() -> MusicList:
         log.error(charterror)
         raise FileNotFoundError
 
-    total_list = MusicList()
-    for music in music_data:
-        if music['id'] in chart_stats['charts']:
-            _stats = [
-                _data if _data else None
-                for _data in chart_stats['charts'][music['id']]
-            ] if {} in chart_stats['charts'][music['id']] else \
-            chart_stats['charts'][music['id']]
-        else:
-            _stats = None
-        total_list.append(Music(stats=_stats, **music))
-
-    return total_list
+    return _build_music_list(music_data, chart_stats)
 
 
 class MaiMusic:
@@ -333,20 +376,37 @@ class MaiMusic:
 
     async def get_music(self) -> None:
         """获取所有曲目数据"""
-        self.total_list = await get_music_list()
-        self.total_level_data = self.total_list.by_level_list()
+        total_list = await get_music_list()
+        total_level_data = total_list.by_level_list()
+        self.total_list = total_list
+        self.total_level_data = total_level_data
 
     async def get_music_alias(self) -> None:
         """获取所有曲目别名"""
         self.total_alias_list = await get_music_alias_list()
 
+    async def load_local_cache(self) -> None:
+        """优先用本地暂存数据恢复运行态，避免启动等待在线接口。"""
+        total_list = await get_music_list_from_cache()
+        total_level_data = total_list.by_level_list()
+        self.total_list = total_list
+        self.total_level_data = total_level_data
+        try:
+            self.total_alias_list = await get_music_alias_list_from_cache()
+        except Exception as e:
+            log.warning(f'本地别名缓存加载失败，稍后将尝试后台刷新: {type(e).__name__}')
+        self.total_plate_id_list = self.build_plate_id_list_from_music()
+        self.hot_music_ids = []
+        self.guess()
+
     async def get_plate_json(self) -> None:
         """获取所有牌子数据"""
         try:
-            self.total_plate_id_list = await maiApi.get_plate_json()
+            total_plate_id_list = await maiApi.get_plate_json()
         except Exception:
             self.total_plate_id_list = self.build_plate_id_list_from_music()
             raise
+        self.total_plate_id_list = total_plate_id_list
 
     def build_plate_id_list_from_music(self) -> Dict[str, List[int]]:
         """从已加载曲库生成牌子需求兜底数据。"""
