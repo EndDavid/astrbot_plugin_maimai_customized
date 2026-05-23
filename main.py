@@ -495,6 +495,15 @@ class MaimaiDXPlugin(Star):
         async for result in score_recommend_handler(event):
             yield result
 
+    @filter.regex(r'^(?:/?吃粪推荐|我要吃大粪)\s*(.*)$')
+    async def bad_score_recommend(self, event: AstrMessageEvent):
+        group_id = event.message_obj.group_id
+        if group_id and not self._is_group_enabled(str(group_id)):
+            return
+        from .command.mai_recommend import bad_score_recommend_handler
+        async for result in bad_score_recommend_handler(event):
+            yield result
+
     @filter.regex(r'^/?锐评[bB]50\s*(.*)$')
     async def b50_analysis(self, event: AstrMessageEvent):
         group_id = event.message_obj.group_id

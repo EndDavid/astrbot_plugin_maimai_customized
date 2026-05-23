@@ -96,6 +96,16 @@ def _sort_key(candidate: dict[str, Any]) -> tuple[bool, float, float, float, str
     )
 
 
+def _avoid_sort_key(candidate: dict[str, Any]) -> tuple[float, bool, float, str]:
+    fit_actual_delta = candidate.get("fit_actual_delta")
+    return (
+        float(candidate["ds"]),
+        fit_actual_delta is None,
+        -(float(fit_actual_delta) if fit_actual_delta is not None else 0.0),
+        str(candidate["title"]),
+    )
+
+
 def _reply_chain(event: AstrMessageEvent, items: list[Any]) -> list[Any]:
     chain = list(items)
     if getattr(event, "message_obj", None):
@@ -209,6 +219,7 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
 
             fit = _fit_diff(music, level_index)
             actual_fit_delta = ds - float(fit) if fit is not None else None
+            fit_actual_delta = float(fit) - ds if fit is not None else None
             candidate = {
                 "music": music,
                 "song_id": str(music.id),
@@ -218,6 +229,7 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
                 "ds": ds,
                 "fit_diff": fit,
                 "actual_fit_delta": actual_fit_delta,
+                "fit_actual_delta": fit_actual_delta,
                 "is_new": bool(music.basic_info.is_new),
                 "bucket": bucket,
                 "floor_ra": floor,
@@ -244,13 +256,28 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
     return result, meta
 
 
+def _sort_avoid_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(candidates, key=_avoid_sort_key)
+
+
 def _draw_music_info_sync(music: Any, qqid: int, user: Any) -> Any:
     return asyncio.run(draw_music_info(music, qqid, user))
 
 
 async def score_recommend_handler(event: AstrMessageEvent):
+    async for result in _recommend_handler(event, avoid=False):
+        yield result
+
+
+async def bad_score_recommend_handler(event: AstrMessageEvent):
+    async for result in _recommend_handler(event, avoid=True):
+        yield result
+
+
+async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
     if _RECOMMEND_SEMAPHORE.locked():
-        yield _reply_text_result(event, '吃分推荐正在处理其他请求，请稍后再试')
+        busy_text = '吃粪推荐正在处理其他请求，请稍后再试' if avoid else '吃分推荐正在处理其他请求，请稍后再试'
+        yield _reply_text_result(event, busy_text)
         return
 
     qq = extract_at_qqid(event) or event.get_sender_id()
@@ -293,13 +320,16 @@ async def score_recommend_handler(event: AstrMessageEvent):
             )
             return
 
+        if avoid:
+            candidates = await asyncio.to_thread(_sort_avoid_candidates, candidates)
         candidate = await asyncio.to_thread(_choose_candidate, candidates)
         if candidate is None:
-            yield _reply_text_result(event, '暂时没有找到符合条件的吃分候选谱面')
+            yield _reply_text_result(event, '暂时没有找到符合条件的候选谱面')
             return
         music = candidate["music"]
         fit_text = f'{candidate["fit_diff"]:.2f}' if candidate.get("fit_diff") is not None else '未知'
         actual_fit_delta_text = f'{candidate["actual_fit_delta"]:+.2f}' if candidate.get("actual_fit_delta") is not None else '未知'
+        fit_actual_delta_text = f'{candidate["fit_actual_delta"]:+.2f}' if candidate.get("fit_actual_delta") is not None else '未知'
         tags = await asyncio.to_thread(get_chart_tags, candidate["song_id"], candidate["level_index"])
         tags_text = '、'.join(tags[:6]) if tags else '暂无'
         tendency = await asyncio.to_thread(_b50_tag_tendency, b35, b15)
@@ -310,16 +340,28 @@ async def score_recommend_handler(event: AstrMessageEvent):
             floor_text = '暂无已有正分地板'
         if not candidate["bucket_full"]:
             floor_text += '（分区未满）'
-        reason = (
-            f'推荐吃分：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
-            f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
-            f'推荐分区：{candidate["bucket"]}，{floor_text}\n'
-            f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["floor_margin"]}）\n'
-            f'实际定数：{candidate["ds"]}，拟合定数：{fit_text}，实际-拟合：{actual_fit_delta_text}\n'
-            f'候选池：前 {_pool_size(candidates)} 首中随机，第 {_candidate_rank(candidates, candidate)} 位\n'
-            f'谱面标签：{tags_text}\n'
-            f'b50倾向：{tendency_text}'
-        )
+        if avoid:
+            reason = (
+                f'吃粪推荐：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
+                f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
+                f'参考分区：{candidate["bucket"]}，{floor_text}\n'
+                f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["floor_margin"]}）\n'
+                f'实际定数：{candidate["ds"]}，拟合定数：{fit_text}，拟合-实际：{fit_actual_delta_text}\n'
+                f'候选池：前 {_pool_size(candidates)} 首中加权随机，第 {_candidate_rank(candidates, candidate)} 位\n'
+                f'谱面标签：{tags_text}\n'
+                f'b50倾向：{tendency_text}'
+            )
+        else:
+            reason = (
+                f'推荐吃分：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
+                f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
+                f'推荐分区：{candidate["bucket"]}，{floor_text}\n'
+                f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["floor_margin"]}）\n'
+                f'实际定数：{candidate["ds"]}，拟合定数：{fit_text}，实际-拟合：{actual_fit_delta_text}\n'
+                f'候选池：前 {_pool_size(candidates)} 首中随机，第 {_candidate_rank(candidates, candidate)} 位\n'
+                f'谱面标签：{tags_text}\n'
+                f'b50倾向：{tendency_text}'
+            )
         try:
             pic = await asyncio.to_thread(_draw_music_info_sync, music, int(event.get_sender_id()), user)
             chain = convert_message_segment_to_chain(pic)
