@@ -27,6 +27,7 @@ RECOMMEND_LEVEL_INDEXES = (2, 3, 4)
 RECOMMEND_CONCURRENCY_LIMIT = 2
 RECOMMEND_RANDOM_POOL_MAX_SIZE = 10
 RECOMMEND_POOL_WEIGHT_STEP = 0.4
+AVOID_RECOMMEND_POOL_WEIGHT_STEP = 1.0
 _RECOMMEND_SEMAPHORE = asyncio.Semaphore(RECOMMEND_CONCURRENCY_LIMIT)
 
 
@@ -123,12 +124,12 @@ def _candidate_pool(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return candidates[:min(len(candidates), RECOMMEND_RANDOM_POOL_MAX_SIZE)]
 
 
-def _choose_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _choose_candidate(candidates: list[dict[str, Any]], weight_step: float) -> dict[str, Any] | None:
     pool = _candidate_pool(candidates)
     if not pool:
         return None
     weights = [
-        1 + (len(pool) - index - 1) * RECOMMEND_POOL_WEIGHT_STEP
+        1 + (len(pool) - index - 1) * weight_step
         for index in range(len(pool))
     ]
     return random.choices(pool, weights=weights, k=1)[0]
@@ -322,7 +323,8 @@ async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
 
         if avoid:
             candidates = await asyncio.to_thread(_sort_avoid_candidates, candidates)
-        candidate = await asyncio.to_thread(_choose_candidate, candidates)
+        weight_step = AVOID_RECOMMEND_POOL_WEIGHT_STEP if avoid else RECOMMEND_POOL_WEIGHT_STEP
+        candidate = await asyncio.to_thread(_choose_candidate, candidates, weight_step)
         if candidate is None:
             yield _reply_text_result(event, '暂时没有找到符合条件的候选谱面')
             return
