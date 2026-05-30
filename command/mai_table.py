@@ -204,7 +204,7 @@ async def level_process_handler(event: AstrMessageEvent):
         qqid = at_qqid
     
     # 匹配正则表达式
-    match = re.match(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?进度\s?([0-9]+)?\s?(.+)?', message_str)
+    match = re.match(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?\s*进度\s?([0-9]+)?\s?(.+)?', message_str)
     if not match:
         return  # 不匹配则不处理
     

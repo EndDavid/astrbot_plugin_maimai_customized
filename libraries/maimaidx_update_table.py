@@ -14,8 +14,8 @@ async def update_rating_table() -> str:
     try:
         dx = maimai_pic('DX.png', (44, 16))
         diff = [Image.new('RGBA', (75, 16), color) for color in ScoreBaseImage.bg_color]
-        if maiApi.config.saveinmem and not ScoreBaseImage.aurora_bg:
-            ScoreBaseImage._load_image()
+        if maiApi.config.saveinmem:
+            ScoreBaseImage.ensure_loaded()
         sbi = ScoreBaseImage if maiApi.config.saveinmem else ScoreBaseImage()
         atime = 0
         for lv in levelList[6:]:
@@ -120,8 +120,8 @@ async def update_plate_table() -> str:
         rlv: Dict[str, List[Music]] = {}
         for _ in list(reversed(levelList)):
             rlv[_] = []
-        if maiApi.config.saveinmem and not ScoreBaseImage.aurora_bg:
-            ScoreBaseImage._load_image()
+        if maiApi.config.saveinmem:
+            ScoreBaseImage.ensure_loaded()
         sbi = ScoreBaseImage if maiApi.config.saveinmem else ScoreBaseImage()
         for _v in version:
             if _v in platecn:

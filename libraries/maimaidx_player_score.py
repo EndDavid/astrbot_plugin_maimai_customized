@@ -93,6 +93,8 @@ async def music_global_data(music: Music, level_index: int) -> MessageSegment:
 class DrawScore(ScoreBaseImage):
     
     def __init__(self, image: Image.Image = None) -> None:
+        if maiApi.config.saveinmem:
+            ScoreBaseImage.ensure_loaded()
         super().__init__(image)
         self._im.alpha_composite(self.aurora_bg)
         self._im.alpha_composite(self.shines_bg, (34, 0))

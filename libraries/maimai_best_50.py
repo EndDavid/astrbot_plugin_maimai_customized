@@ -51,6 +51,11 @@ class ScoreBaseImage:
     rainbow_bottom_bg = None
 
     @classmethod
+    def ensure_loaded(cls):
+        if cls.aurora_bg is None:
+            cls._load_image()
+
+    @classmethod
     def _load_image(cls):
         cls._diff = [
             maimai_pic('b50_score_basic.png'),
@@ -123,9 +128,7 @@ class ScoreBaseImage:
             `dx`: 是否为新版本成绩
             `height`: 起始高度
         """
-        # 确保图片资源已加载
-        if not self._diff:
-            self._load_image()
+        self.ensure_loaded()
         
         # y为第一排纵向坐标，dy为各行间距
         dy = 114

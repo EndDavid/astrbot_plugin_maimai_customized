@@ -3,6 +3,8 @@ from textwrap import dedent
 from typing import Any, List
 import math
 
+from playwright.async_api import Error as PlaywrightError
+
 import astrbot.api.message_components as Comp
 
 from astrbot.api.event import AstrMessageEvent
@@ -225,7 +227,13 @@ async def ginfo_handler(event: AstrMessageEvent):
         平均达成率：{stats.avg:.2f}%
         平均 DX 分数：{stats.avg_dx:.1f}
         谱面成绩标准差：{stats.std_dev:.2f}''')
-    pic = await music_global_data(music, level_index)
+    try:
+        pic = await music_global_data(music, level_index)
+    except PlaywrightError as e:
+        if 'Executable doesn\'t exist' in str(e):
+            yield event.plain_result('ginfo 需要 Playwright 浏览器运行环境，请管理员执行：python -m playwright install chromium')
+            return
+        raise
     chain = convert_message_segment_to_chain(pic)
     # 添加引用回复
     if not chain or not isinstance(chain[0], Comp.Reply):
@@ -271,13 +279,17 @@ async def score_handler(event: AstrMessageEvent):
         try:
             result = re.search(r'([绿黄红紫白])\s?([0-9]+)', args)
             if not result:
-                raise ValueError
+                yield event.plain_result('格式错误，输入"分数线 帮助"以查看帮助信息')
+                return
             level_labels = ['绿', '黄', '红', '紫', '白']
             level_labels2 = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:MASTER']
             level_index = level_labels.index(result.group(1))
             chart_id = result.group(2)
             line = float(pro[-1])
             music = mai.total_list.by_id(chart_id)
+            if not music:
+                yield event.plain_result('未找到指定曲目，请检查歌曲 ID')
+                return
             chart = music.charts[level_index]
             tap = int(chart.notes.tap)
             slide = int(chart.notes.slide)
@@ -289,7 +301,8 @@ async def score_handler(event: AstrMessageEvent):
             break_50_reduce = total_score * break_bonus / 4
             reduce = 101 - line
             if reduce <= 0 or reduce >= 101:
-                raise ValueError
+                yield event.plain_result('格式错误，输入"分数线 帮助"以查看帮助信息')
+                return
             msg = dedent(f'''\
                 {music.title}「{level_labels2[level_index]}」
                 分数线「{line}%」

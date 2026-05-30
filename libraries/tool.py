@@ -60,3 +60,9 @@ async def run_chrome_to_base64() -> str:
         raise OSError(content_array)
 
     return 'base64://' + content_array[-1]
+
+
+async def playwright_chromium_status() -> tuple[bool, str]:
+    async with async_playwright() as p:
+        executable = Path(p.chromium.executable_path)
+        return executable.exists(), str(executable)

@@ -13,7 +13,7 @@ from .libraries.maimaidx_api_data import maiApi
 from .libraries.maimaidx_music import mai
 import sys
 
-@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.5.0")
+@register("astrbot_plugin_maimai", "Xiawan", "maimaiDX插件", "1.6.0")
 class MaimaiDXPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -107,6 +107,8 @@ class MaimaiDXPlugin(Star):
             log.warning(f'本地maimai缓存加载失败，将继续后台刷新: {type(e).__name__}: {e}')
             log.warning(traceback.format_exc())
 
+        self._load_images_to_memory()
+
         self._schedule_startup_background_tasks()
 
         log.info('maimaiDX插件初始化完成')
@@ -140,6 +142,10 @@ class MaimaiDXPlugin(Star):
         except Exception as e:
             log.error(f'执行初始检查失败: {e}')
             log.error(traceback.format_exc())
+        try:
+            await self._check_playwright_chromium()
+        except Exception as e:
+            log.warning(f'检查 Playwright Chromium 失败: {type(e).__name__}: {e}')
 
     async def _load_local_maimai_cache(self):
         log.info('正在从本地缓存恢复maimai运行数据')
@@ -260,11 +266,27 @@ class MaimaiDXPlugin(Star):
         """如果配置了，将图片加载到内存中"""
         if maiApi.config.saveinmem:
             try:
-                ScoreBaseImage._load_image()
+                ScoreBaseImage.ensure_loaded()
                 log.info('已将图片保存在内存中')
             except Exception as e:
                 log.error(f'加载图片到内存失败: {e}')
                 log.error(traceback.format_exc())
+
+    async def _check_playwright_chromium(self):
+        """检查 ginfo 依赖的 Playwright Chromium 是否可用。"""
+        try:
+            from .libraries.tool import playwright_chromium_status
+            ok, detail = await playwright_chromium_status()
+        except ImportError as e:
+            log.warning(f'ginfo 统计图不可用：Playwright 未安装或无法导入（{e}）')
+            return
+        if ok:
+            log.info(f'Playwright Chromium 可用: {detail}')
+        else:
+            log.warning(
+                'ginfo 统计图不可用：未检测到 Playwright Chromium。'
+                '请执行 python -m playwright install chromium 后重载插件。'
+            )
 
     def _perform_initial_checks(self):
         """执行对目录和数据的初始检查"""

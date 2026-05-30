@@ -58,7 +58,7 @@ async def sgwcmaid_update_handler(event: Any, context: Any | None = None, config
         if not is_probable_sgid(sgid):
             yield join_messages(recall_notice, "❌ SGID 格式不正确，请发送以 SGWCMAID 开头的完整文本。")
             return
-        max_age_seconds = max(30, int_config(config, "sgid_max_age_seconds", 180))
+        max_age_seconds = max(30, int_config(config, "sgid_max_age_seconds", 600))
         if validation_error := validate_sgid_for_one_time_use(sgid, max_age_seconds):
             yield join_messages(recall_notice, f"❌ {validation_error}")
             return

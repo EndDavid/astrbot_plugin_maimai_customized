@@ -55,9 +55,9 @@
   },
   "sgid_max_age_seconds": {
     "description": "SGID 有效窗口",
-    "hint": "更新b50 使用的官方二维码 SGID 最大有效秒数。超过该时间会拒绝使用，建议保持 180。",
+    "hint": "更新b50 使用的官方二维码 SGID 最大有效秒数。超过该时间会拒绝使用，默认 600 秒。",
     "type": "int",
-    "default": 180
+    "default": 600
   },
   "request_timeout_seconds": {
     "description": "更新b50 请求超时",

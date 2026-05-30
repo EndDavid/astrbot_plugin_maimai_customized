@@ -41,7 +41,7 @@ def sgid_issued_at(value: str) -> int | None:
     return int(dt.timestamp())
 
 
-def validate_sgid_freshness(value: str, max_age_seconds: int = 180, future_tolerance_seconds: int = 60) -> SgidFreshness:
+def validate_sgid_freshness(value: str, max_age_seconds: int = 600, future_tolerance_seconds: int = 60) -> SgidFreshness:
     issued_at = sgid_issued_at(value)
     if issued_at is None:
         return SgidFreshness(False, "SGID 时间戳无法解析，请重新从官方公众号获取二维码后再试。")

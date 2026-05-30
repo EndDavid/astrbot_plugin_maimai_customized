@@ -107,7 +107,7 @@ python -m playwright install chromium
 | `roast_persona_webui_host` | `127.0.0.1` | WebUI 监听地址 |
 | `roast_persona_webui_port` | `8796` | WebUI 监听端口 |
 | `roast_persona_webui_token` | 空 | WebUI 访问 Token；监听非本机地址时必填 |
-| `sgid_max_age_seconds` | `180` | SGWCMAID 有效窗口，单位秒 |
+| `sgid_max_age_seconds` | `600` | SGWCMAID 有效窗口，单位秒 |
 | `request_timeout_seconds` | `30` | 成绩同步网络请求超时时间 |
 | `maimai_http_proxy` | 空 | 成绩同步访问官方数据源时使用的 HTTP 代理 |
 | `warn_unsupported_recall` | `true` | 无法自动撤回 SGWCMAID 消息时是否提醒用户 |
@@ -439,6 +439,8 @@ static/mai/plate/
 ```
 
 如果资源存在但仍失败，请检查依赖和 Playwright Chromium 是否安装完整。
+
+插件重载时会检查 `ginfo` 所需的 Playwright Chromium。如果日志提示未检测到 Chromium，请执行 `python -m playwright install chromium` 后重载插件。
 
 ### 别名查歌不准或没有结果
 
