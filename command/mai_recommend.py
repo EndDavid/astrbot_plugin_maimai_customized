@@ -12,7 +12,7 @@ from .. import log
 from ..command.mai_base import convert_message_segment_to_chain, extract_at_qqid
 from ..libraries.chart_tags.lookup import chart_key, get_chart_tags
 from ..libraries.chart_tags.rule_tags import filter_allowed_tags
-from ..libraries.chart_tags.storage import CHART_TAGS_FILE, read_chart_tags
+from ..libraries.chart_tags.storage import read_chart_tags
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from ..libraries.maimaidx_music import mai
@@ -26,10 +26,7 @@ RECOMMEND_MAX_DS = 15.0
 RECOMMEND_LEVEL_INDEXES = (2, 3, 4)
 RECOMMEND_CONCURRENCY_LIMIT = 2
 RECOMMEND_RANDOM_POOL_MAX_SIZE = 10
-RECOMMEND_POOL_WEIGHT_STEP = 0.4
-AVOID_RECOMMEND_POOL_WEIGHT_STEP = 1.0
 _RECOMMEND_SEMAPHORE = asyncio.Semaphore(RECOMMEND_CONCURRENCY_LIMIT)
-_CHART_TAGS_CACHE: tuple[float, dict[str, Any]] | None = None
 
 
 def _sssp_rating(ds: float) -> int:
@@ -86,26 +83,13 @@ def _is_sssp_in_b50(chart: Any) -> bool:
     return rate in {"sssp", "sss+"} or achievements >= 100.5
 
 
-def _sort_key(candidate: dict[str, Any]) -> tuple[float, bool, float, float, float, str]:
-    actual_fit_delta = candidate.get("actual_fit_delta")
-    floor_margin = candidate.get("floor_margin")
+def _sort_key(candidate: dict[str, Any]) -> tuple[float, bool, float, int, str]:
+    fit_delta = candidate.get("fit_delta")
     return (
-        -float(candidate.get("tag_overlap", 0)),
-        actual_fit_delta is None,
-        -(float(actual_fit_delta) if actual_fit_delta is not None else 0.0),
         float(candidate["ds"]),
-        -(float(floor_margin) if floor_margin is not None else 0.0),
-        str(candidate["title"]),
-    )
-
-
-def _avoid_sort_key(candidate: dict[str, Any]) -> tuple[float, float, bool, float, str]:
-    fit_actual_delta = candidate.get("fit_actual_delta")
-    return (
-        float(candidate.get("tag_overlap", 0)),
-        float(candidate["ds"]),
-        fit_actual_delta is None,
-        -(float(fit_actual_delta) if fit_actual_delta is not None else 0.0),
+        fit_delta is None,
+        float(fit_delta) if fit_delta is not None else 999,
+        -int(candidate["sssp_ra"]),
         str(candidate["title"]),
     )
 
@@ -127,15 +111,11 @@ def _candidate_pool(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return candidates[:min(len(candidates), RECOMMEND_RANDOM_POOL_MAX_SIZE)]
 
 
-def _choose_candidate(candidates: list[dict[str, Any]], weight_step: float) -> dict[str, Any] | None:
+def _choose_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     pool = _candidate_pool(candidates)
     if not pool:
         return None
-    weights = [
-        1 + (len(pool) - index - 1) * weight_step
-        for index in range(len(pool))
-    ]
-    return random.choices(pool, weights=weights, k=1)[0]
+    return random.choice(pool)
 
 
 def _pool_size(candidates: list[dict[str, Any]]) -> int:
@@ -158,21 +138,8 @@ def _tags_from_data(tags_data: dict[str, Any], song_id: Any, level_index: Any) -
     return filter_allowed_tags(str(tag) for tag in tags)
 
 
-def _read_chart_tags_cached() -> dict[str, Any]:
-    global _CHART_TAGS_CACHE
-    try:
-        mtime = CHART_TAGS_FILE.stat().st_mtime
-    except OSError:
-        mtime = 0.0
-    if _CHART_TAGS_CACHE and _CHART_TAGS_CACHE[0] == mtime:
-        return _CHART_TAGS_CACHE[1]
+def _b50_tag_tendency(b35: list[Any], b15: list[Any], limit: int = 5) -> list[str]:
     tags_data = read_chart_tags()
-    _CHART_TAGS_CACHE = (mtime, tags_data)
-    return tags_data
-
-
-def _b50_tag_tendency(b35: list[Any], b15: list[Any], limit: int = 5, tags_data: dict[str, Any] | None = None) -> list[str]:
-    tags_data = tags_data if tags_data is not None else _read_chart_tags_cached()
     counts: dict[str, int] = {}
     for chart in [*b35, *b15]:
         song_id = str(getattr(chart, "song_id", "") or "")
@@ -188,30 +155,6 @@ def _b50_tag_tendency(b35: list[Any], b15: list[Any], limit: int = 5, tags_data:
         tag
         for tag, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
     ]
-
-
-def _b50_tag_set(b35: list[Any], b15: list[Any], tags_data: dict[str, Any]) -> set[str]:
-    result: set[str] = set()
-    for chart in [*b35, *b15]:
-        song_id = str(getattr(chart, "song_id", "") or "")
-        try:
-            level_index = int(getattr(chart, "level_index", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if not song_id:
-            continue
-        result.update(_tags_from_data(tags_data, song_id, level_index))
-    return result
-
-
-def _add_tag_overlap(candidates: list[dict[str, Any]], b35: list[Any], b15: list[Any]) -> list[dict[str, Any]]:
-    tags_data = _read_chart_tags_cached()
-    b50_tags = _b50_tag_set(b35, b15, tags_data)
-    for candidate in candidates:
-        tags = _tags_from_data(tags_data, candidate["song_id"], candidate["level_index"])
-        candidate["tags"] = tags
-        candidate["tag_overlap"] = len(set(tags) & b50_tags)
-    return candidates
 
 
 def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -259,8 +202,7 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
                 continue
 
             fit = _fit_diff(music, level_index)
-            actual_fit_delta = ds - float(fit) if fit is not None else None
-            fit_actual_delta = float(fit) - ds if fit is not None else None
+            fit_delta = float(fit) - ds if fit is not None else None
             candidate = {
                 "music": music,
                 "song_id": str(music.id),
@@ -269,8 +211,7 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
                 "level": music.level[level_index],
                 "ds": ds,
                 "fit_diff": fit,
-                "actual_fit_delta": actual_fit_delta,
-                "fit_actual_delta": fit_actual_delta,
+                "fit_delta": fit_delta,
                 "is_new": bool(music.basic_info.is_new),
                 "bucket": bucket,
                 "floor_ra": floor,
@@ -278,11 +219,10 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
                 "ds_min": ds_min,
                 "ds_max": ds_max,
                 "sssp_ra": sssp_ra,
-                "floor_margin": sssp_ra - floor,
+                "entry_margin": sssp_ra - floor,
             }
             result.append(candidate)
 
-    result = _add_tag_overlap(result, b35, b15)
     result.sort(key=_sort_key)
     meta = {
         "rating": rating,
@@ -298,28 +238,13 @@ def _collect_candidates(user: Any) -> tuple[list[dict[str, Any]], dict[str, Any]
     return result, meta
 
 
-def _sort_avoid_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(candidates, key=_avoid_sort_key)
-
-
 def _draw_music_info_sync(music: Any, qqid: int, user: Any) -> Any:
     return asyncio.run(draw_music_info(music, qqid, user))
 
 
 async def score_recommend_handler(event: AstrMessageEvent):
-    async for result in _recommend_handler(event, avoid=False):
-        yield result
-
-
-async def bad_score_recommend_handler(event: AstrMessageEvent):
-    async for result in _recommend_handler(event, avoid=True):
-        yield result
-
-
-async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
     if _RECOMMEND_SEMAPHORE.locked():
-        busy_text = '吃粪推荐正在处理其他请求，请稍后再试' if avoid else '吃分推荐正在处理其他请求，请稍后再试'
-        yield _reply_text_result(event, busy_text)
+        yield _reply_text_result(event, '吃分推荐正在处理其他请求，请稍后再试')
         return
 
     qq = extract_at_qqid(event) or event.get_sender_id()
@@ -330,13 +255,15 @@ async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
                 timeout=QUERY_B50_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            yield _reply_text_result(event, '水鱼 B50 查询超时，请稍后再试')
+            # yield _reply_text_result(event, '水鱼 B50 查询超时，请稍后再试')
+            yield _reply_text_result(event, '水鱼 B50 查询超时，云层暂时遮蔽了视线，风息稍歇。请稍候片刻，待云散风清，我再为你传达讯息...')
             return
         except (UserNotFoundError, UserNotExistsError):
-            yield _reply_text_result(event, '没有找到该玩家的水鱼 B50，请确认已绑定 QQ 或允许查询')
+            # yield _reply_text_result(event, '没有找到该玩家的水鱼 B50，请确认已绑定 QQ 或允许查询')
+            yield _reply_text_result(event, '风似乎未能捕捉到该玩家的轨迹呢，没有找到水鱼 B50 数据。或许需要先让风与你建立更紧密的联系（绑定 QQ），以便我更好地倾听你的故事')
             return
         except UserDisabledQueryError:
-            yield _reply_text_result(event, '该玩家关闭了水鱼第三方成绩查询')
+            yield _reply_text_result(event, '风似乎未能捕捉到该玩家的轨迹呢，或许该玩家关闭了水鱼第三方成绩查询...')
             return
         except Exception as exc:
             yield _reply_text_result(event, f'获取 B50 失败：{type(exc).__name__}')
@@ -362,18 +289,14 @@ async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
             )
             return
 
-        if avoid:
-            candidates = await asyncio.to_thread(_sort_avoid_candidates, candidates)
-        weight_step = AVOID_RECOMMEND_POOL_WEIGHT_STEP if avoid else RECOMMEND_POOL_WEIGHT_STEP
-        candidate = await asyncio.to_thread(_choose_candidate, candidates, weight_step)
+        candidate = await asyncio.to_thread(_choose_candidate, candidates)
         if candidate is None:
-            yield _reply_text_result(event, '暂时没有找到符合条件的候选谱面')
+            yield _reply_text_result(event, '暂时没有找到符合条件的吃分候选谱面')
             return
         music = candidate["music"]
         fit_text = f'{candidate["fit_diff"]:.2f}' if candidate.get("fit_diff") is not None else '未知'
-        actual_fit_delta_text = f'{candidate["actual_fit_delta"]:+.2f}' if candidate.get("actual_fit_delta") is not None else '未知'
-        fit_actual_delta_text = f'{candidate["fit_actual_delta"]:+.2f}' if candidate.get("fit_actual_delta") is not None else '未知'
-        tags = candidate.get("tags") or await asyncio.to_thread(get_chart_tags, candidate["song_id"], candidate["level_index"])
+        fit_delta_text = f'{candidate["fit_delta"]:+.2f}' if candidate.get("fit_delta") is not None else '未知'
+        tags = await asyncio.to_thread(get_chart_tags, candidate["song_id"], candidate["level_index"])
         tags_text = '、'.join(tags[:6]) if tags else '暂无'
         tendency = await asyncio.to_thread(_b50_tag_tendency, b35, b15)
         tendency_text = '、'.join(tendency) if tendency else '暂无'
@@ -383,28 +306,16 @@ async def _recommend_handler(event: AstrMessageEvent, avoid: bool):
             floor_text = '暂无已有正分地板'
         if not candidate["bucket_full"]:
             floor_text += '（分区未满）'
-        if avoid:
-            reason = (
-                f'吃粪推荐：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
-                f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
-                f'参考分区：{candidate["bucket"]}，{floor_text}\n'
-                f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["floor_margin"]}）\n'
-                f'实际定数：{candidate["ds"]}，拟合定数：{fit_text}，拟合-实际：{fit_actual_delta_text}\n'
-                f'候选池：前 {_pool_size(candidates)} 首中加权随机，第 {_candidate_rank(candidates, candidate)} 位\n'
-                f'谱面标签：{tags_text}\n'
-                f'b50倾向：{tendency_text}'
-            )
-        else:
-            reason = (
-                f'推荐吃分：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
-                f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
-                f'推荐分区：{candidate["bucket"]}，{floor_text}\n'
-                f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["floor_margin"]}）\n'
-                f'实际定数：{candidate["ds"]}，拟合定数：{fit_text}，实际-拟合：{actual_fit_delta_text}\n'
-                f'候选池：前 {_pool_size(candidates)} 首中随机，第 {_candidate_rank(candidates, candidate)} 位\n'
-                f'谱面标签：{tags_text}\n'
-                f'b50倾向：{tendency_text}'
-            )
+        reason = (
+            f'推荐吃分：{candidate["title"]} [{candidate["level"]} / {candidate["ds"]}]\n'
+            f'当前 Rating：{meta["rating"]}，推荐定数区间：{candidate["ds_min"]:.2f} - {candidate["ds_max"]:.2f}\n'
+            f'推荐分区：{candidate["bucket"]}，{floor_text}\n'
+            f'SSS+ 理论单曲 Rating：{candidate["sssp_ra"]}（高出地板 {candidate["entry_margin"]}）\n'
+            f'拟合定数：{fit_text}，实际定数：{candidate["ds"]}，拟合-实际：{fit_delta_text}\n'
+            f'候选池：前 {_pool_size(candidates)} 首中随机，第 {_candidate_rank(candidates, candidate)} 位\n'
+            f'谱面标签：{tags_text}\n'
+            f'b50倾向：{tendency_text}'
+        )
         try:
             pic = await asyncio.to_thread(_draw_music_info_sync, music, int(event.get_sender_id()), user)
             chain = convert_message_segment_to_chain(pic)
