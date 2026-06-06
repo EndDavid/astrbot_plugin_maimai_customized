@@ -19,7 +19,8 @@ async def b50_analysis_handler(event, context, config: dict | None = None):
     style = message.replace('/锐评b50', '').replace('锐评b50', '').strip()
     image_path = ""
     try:
-        yield event.plain_result("正在从水鱼查分器拉取 B50 并调用 LLM 生成锐评，请稍候...")
+        # yield event.plain_result("正在从水鱼查分器拉取 B50 并调用 LLM 生成锐评，请稍候...")
+        yield event.plain_result("正在整理云中的思绪，并尝试从风那里获取数据，请稍候片刻...")
         userinfo = await maiApi.query_user_b50(qqid=int(qqid))
         prompt = build_analysis_context(userinfo, str(qqid))
         persona_prompt = ""
@@ -35,7 +36,8 @@ async def b50_analysis_handler(event, context, config: dict | None = None):
         yield event.chain_result([Comp.Image.fromFileSystem(image_path)])
     except Exception as e:
         log.error(f"锐评b50 失败: {type(e).__name__} - {e}")
-        yield event.plain_result("锐评b50 失败：生成过程中出现错误，请稍后再试；管理员可查看插件日志。")
+        # yield event.plain_result("锐评b50 失败：生成过程中出现错误，请稍后再试；管理员可查看插件日志。")
+        yield event.plain_result("风在整理锐评时遇到了一些阻碍，未能成功生成。请稍后再试，或许那时的风会更顺畅些...")
     finally:
         if image_path:
             with suppress(FileNotFoundError):
